@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pika
@@ -125,6 +126,69 @@ def translate_path(host_path: str) -> str:
     return "/claude-sessions" + host_path[idx + len("/projects") :]
 
 
+CAG_SERVER_URL = os.environ.get("CAG_SERVER_URL", "http://localhost:4000")
+
+
+def post_cag_triples(session_id: str, triples: list[dict], replace: bool = False) -> None:
+    """POST extracted CAG triples to the compounding-agents server. Non-fatal.
+
+    Args:
+        session_id: The session identifier.
+        triples: List of triple dicts to insert.
+        replace: If True, the server deletes existing session triples before inserting.
+    """
+    if not triples:
+        return
+    import requests
+    url = f"{CAG_SERVER_URL}/hooks/cag-triples"
+    try:
+        resp = requests.post(url, json={
+            "session_id": session_id,
+            "triples": triples,
+            "replace": replace,
+        }, timeout=5)
+        if resp.ok:
+            result = resp.json()
+            log("INFO", f"  CAG triples posted: {result.get('inserted', 0)} (replace={replace})")
+        else:
+            log("WARN", f"  CAG POST failed: {resp.status_code}")
+    except Exception as e:
+        log("WARN", f"  CAG server unreachable ({url}): {e}")
+
+
+def extract_last_assistant_text(transcript_path: str) -> str:
+    """Extract only the last assistant message text from a JSONL transcript.
+
+    Instead of concatenating all assistant messages (which can exceed LLM limits),
+    we extract only the most recent one. The CAG cache provides prior context
+    so the LLM can produce a complete, refined set of triples incrementally.
+    """
+    last_text = ""
+    with open(transcript_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if entry.get("type") != "assistant":
+                continue
+            content = entry.get("message", {}).get("content", "")
+            parts = []
+            if isinstance(content, str):
+                parts.append(content)
+            elif isinstance(content, list):
+                for block in content:
+                    if block.get("type") == "text":
+                        parts.append(block.get("text", ""))
+            text = "\n\n".join(p for p in parts if p.strip())
+            if text.strip():
+                last_text = text
+    return last_text
+
+
 def process_message(body: bytes) -> None:
     """Process a single pipeline job."""
     msg = json.loads(body)
@@ -160,28 +224,101 @@ def process_message(body: bytes) -> None:
 
     log("INFO", f"Processing: {basename}")
 
+    # Phase 6e: Query compounding-agents server for session correlation context
+    orch_session_id = None
+    try:
+        import requests
+        sid = session_id or basename
+        resp = requests.get(f"{CAG_SERVER_URL}/api/session-context/{sid}", timeout=3)
+        if resp.ok:
+            ctx = resp.json()
+            orch_session_id = ctx.get("orchSessionId")
+            if orch_session_id:
+                log("INFO", f"  Correlated with orchestrator session: {orch_session_id}")
+    except Exception:
+        pass  # Graceful degradation — proceed without correlation
+
     # Import pipeline modules (deferred to avoid import errors during setup)
-    from pipeline.jsonl_to_rdf import build_graph
     from pipeline.llm_providers import get_provider
-    from pipeline.load_fuseki import ensure_dataset, upload_turtle
 
-    # Build RDF graph
     model = get_provider()
-    graph = build_graph(container_path, skip_extraction=False, model=model)
 
-    # Serialize to Turtle
-    graph.serialize(destination=str(output_file), format="turtle")
-    triple_count = len(graph)
+    # Run devkg and CAG extraction in parallel
+    devkg_triple_count = 0
+    cag_triple_count = 0
 
-    # Upload to Fuseki
-    ensure_dataset(FUSEKI_URL, FUSEKI_DATASET, auth=FUSEKI_AUTH)
-    upload_turtle(FUSEKI_URL, FUSEKI_DATASET, str(output_file), auth=FUSEKI_AUTH)
+    def _run_devkg():
+        nonlocal devkg_triple_count
+        from pipeline.jsonl_to_rdf import build_graph
+        from pipeline.load_fuseki import ensure_dataset, upload_turtle
+
+        graph = build_graph(container_path, skip_extraction=False, model=model)
+
+        # Phase 6e: Tag session node with correlation ID if available
+        if orch_session_id:
+            from pipeline.common import DATA, DEVKG, slug as uri_slug
+            from rdflib import Literal
+            session_uri = DATA[f"session/{uri_slug(session_id or basename)}"]
+            graph.add((session_uri, DEVKG.hasCorrelationId, Literal(orch_session_id)))
+
+        graph.serialize(destination=str(output_file), format="turtle")
+        devkg_triple_count = len(graph)
+
+        ensure_dataset(FUSEKI_URL, FUSEKI_DATASET, auth=FUSEKI_AUTH)
+        upload_turtle(FUSEKI_URL, FUSEKI_DATASET, str(output_file), auth=FUSEKI_AUTH)
+        log("DONE", f"  devkg: {devkg_triple_count} triples -> {output_file}")
+
+    def _run_cag():
+        nonlocal cag_triple_count
+        from pipeline.cag_extraction import extract_cag_triples
+        from pipeline.cag_cache import get_cached_cag, cache_cag
+
+        sid = session_id or basename
+        last_msg = extract_last_assistant_text(container_path)
+        if not last_msg or len(last_msg.strip()) <= 50:
+            return
+        prior_triples = get_cached_cag(sid)
+        cag_triples = extract_cag_triples(model, last_msg, prior_triples=prior_triples)
+        if cag_triples:
+            cag_triple_count = len(cag_triples)
+            log("INFO", f"  CAG extracted: {cag_triple_count} triples (prior={len(prior_triples or [])})")
+            post_cag_triples(sid, cag_triples, replace=True)
+            cache_cag(sid, cag_triples)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {
+            executor.submit(_run_devkg): "devkg",
+            executor.submit(_run_cag): "cag",
+        }
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                future.result()
+            except Exception as e:
+                log("WARN" if name == "cag" else "ERROR", f"  {name} extraction failed: {e}")
+                if name == "devkg":
+                    raise  # devkg failure is fatal for the job
+
+    # Notify pipeline completion (non-fatal)
+    try:
+        import requests
+        requests.post(
+            f"{CAG_SERVER_URL}/hooks/pipeline-complete",
+            json={
+                "session_id": session_id or basename,
+                "devkg_triples": devkg_triple_count,
+                "cag_triples": cag_triple_count,
+            },
+            timeout=5,
+        )
+    except Exception:
+        pass
 
     # Update watermark after successful processing
     watermarks[basename] = current_hash
     save_watermarks(watermarks)
 
-    log("DONE", f"{basename} -> {output_file} ({triple_count} triples)")
+    log("DONE", f"{basename} ({devkg_triple_count} devkg + {cag_triple_count} cag triples)")
 
 
 def on_message(channel, method, properties, body):
@@ -190,8 +327,11 @@ def on_message(channel, method, properties, body):
         process_message(body)
         channel.basic_ack(delivery_tag=method.delivery_tag)
     except Exception as e:
-        msg = json.loads(body) if body else {}
-        session_id = msg.get("session_id", "unknown")
+        try:
+            msg = json.loads(body) if body else {}
+            session_id = msg.get("session_id", "unknown")
+        except Exception:
+            session_id = body[:80].decode(errors="replace") if body else "unknown"
         log("ERROR", f"{session_id}: {e}")
         traceback.print_exc(file=sys.stderr)
         channel.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
