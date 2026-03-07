@@ -78,10 +78,13 @@ Return a JSON object with a "triples" array. Each triple has:
 
 ## Rules:
 - Only extract concrete, actionable knowledge — not generic descriptions
-- Subject and object should be short technical identifiers (2-4 words max)
+- Subject and object should be short, specific technical identifiers (2-4 words, kebab-case preferred, e.g., "cag-extraction", "redis-streams", "hooks-ts")
+- Do NOT use generic subjects like "current-task", "updated-tests", "implementation", "code-changes". Use the actual thing: "cag-cache-module", "queue-consumer-parallelization"
+- Do NOT extract tautological observations like "tests observed pass" or "task observed completed" — these carry no useful information for a future agent
 - Skip greetings, acknowledgements, and meta-commentary
 - If no relevant knowledge found, return {{"triples": []}}
-- Prior triples should only be removed if the new text explicitly contradicts or supersedes them. If the new text is unrelated, tangential, or meta-commentary about the project architecture, keep all prior triples unchanged.
+- Prior triples should only be removed if the new text explicitly contradicts or supersedes them. If the new text is unrelated, tangential, or meta-commentary about the project architecture, keep all prior triples unchanged
+- Merge duplicate subjects: if a prior triple already covers the same subject+predicate, update it rather than adding a new one
 {prior_section}
 ## Text to analyze:
 {text}
