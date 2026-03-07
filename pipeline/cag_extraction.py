@@ -82,8 +82,8 @@ Return a JSON object with a "triples" array. Each triple has:
 - Do NOT use generic subjects like "current-task", "updated-tests", "implementation", "code-changes". Use the actual thing: "cag-cache-module", "queue-consumer-parallelization"
 - Do NOT extract tautological observations like "tests observed pass" or "task observed completed" — these carry no useful information for a future agent
 - Skip greetings, acknowledgements, and meta-commentary
-- If no relevant knowledge found, return {{"triples": []}}
-- Prior triples should only be removed if the new text explicitly contradicts or supersedes them. If the new text is unrelated, tangential, or meta-commentary about the project architecture, keep all prior triples unchanged
+- If no relevant knowledge found AND no prior triples were provided, return {{"triples": []}}
+- **CRITICAL**: When prior triples are provided, you MUST return them unchanged if the new text has no relevant knowledge to add or modify. NEVER return an empty array when prior triples exist. Prior triples should only be removed if the new text explicitly contradicts or supersedes them.
 - Merge duplicate subjects: if a prior triple already covers the same subject+predicate, update it rather than adding a new one
 {prior_section}
 ## Text to analyze:
@@ -180,5 +180,10 @@ def extract_cag_triples(model, text: str, prior_triples: list[dict] | None = Non
                 ]
 
         valid.append(result)
+
+    # Guard: if prior triples existed but LLM returned empty, preserve prior set
+    if not valid and prior_triples:
+        print("  [cag] LLM returned empty with prior triples — preserving prior set", file=sys.stderr)
+        return prior_triples
 
     return valid
