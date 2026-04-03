@@ -58,7 +58,6 @@ from pipeline.triple_extraction import (
     build_extraction_prompt,
     _parse_triples_response,
 )
-from pipeline.jsonl_to_rdf import build_graph
 from pipeline.common import add_triples_to_graph, DATA
 
 
@@ -158,14 +157,15 @@ def extract_messages_from_jsonl(jsonl_path: Path) -> list[dict]:
     """Read raw JSONL and extract assistant messages with text >= 30 chars.
 
     Returns list of {session_id, message_uuid, message_index, source_file, text}.
-    Mirrors the text extraction logic in jsonl_to_rdf.py lines 127-141.
+    Mirrors the text extraction logic in jsonl_to_rdf.py / pi_to_rdf.py.
     """
     messages = []
     session_id = None
+    entries = []
+    is_pi_session = ".pi/agent/sessions" in str(jsonl_path)
 
     with open(jsonl_path, "r") as f:
-        entries = []
-        for line in f:
+        for i, line in enumerate(f):
             line = line.strip()
             if not line:
                 continue
@@ -175,11 +175,26 @@ def extract_messages_from_jsonl(jsonl_path: Path) -> list[dict]:
                 continue
 
             entry_type = entry.get("type")
-            if entry_type not in ("user", "assistant"):
-                continue
-            entries.append(entry)
-            if session_id is None and entry.get("sessionId"):
-                session_id = entry["sessionId"]
+            
+            if is_pi_session:
+                if entry_type == "session":
+                    if session_id is None and entry.get("id"):
+                        session_id = entry["id"]
+                    continue
+                if entry_type != "message":
+                    continue
+                msg = entry.get("message", {})
+                role = msg.get("role")
+                if role not in ("user", "assistant"):
+                    continue
+                entry["type"] = role
+                entries.append(entry)
+            else:
+                if entry_type not in ("user", "assistant"):
+                    continue
+                entries.append(entry)
+                if session_id is None and entry.get("sessionId"):
+                    session_id = entry["sessionId"]
 
     if session_id is None:
         session_id = jsonl_path.stem
@@ -202,7 +217,11 @@ def extract_messages_from_jsonl(jsonl_path: Path) -> list[dict]:
         if len(full_text.strip()) < 30:
             continue
 
-        msg_uuid = entry.get("uuid", f"unknown-{i}")
+        if is_pi_session:
+            msg_uuid = entry.get("id", f"unknown-{i}")
+        else:
+            msg_uuid = entry.get("uuid", f"unknown-{i}")
+            
         messages.append({
             "session_id": session_id,
             "message_uuid": msg_uuid,
@@ -506,6 +525,11 @@ def cmd_collect(args):
 
         # Build RDF structure (no extraction — we already have triples)
         try:
+            if ".pi/agent/sessions" in str(source_path):
+                from pipeline.pi_to_rdf import build_graph
+            else:
+                from pipeline.jsonl_to_rdf import build_graph
+                
             g = build_graph(source_file, skip_extraction=True)
         except Exception as e:
             print(f"  ERROR building graph for {source_path.name}: {e}", file=sys.stderr)

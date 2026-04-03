@@ -117,13 +117,21 @@ def translate_path(host_path: str) -> str:
 
     Host: ~/.claude/projects/{slug}/{session}.jsonl
     Container: /claude-sessions/{slug}/{session}.jsonl
+    
+    Host: ~/.pi/agent/sessions/{slug}/{session}.jsonl
+    Container: /pi-sessions/{slug}/{session}.jsonl
     """
-    # Find /projects/ in the path and replace everything before it
-    marker = "/projects/"
-    idx = host_path.find(marker)
-    if idx == -1:
-        return host_path  # can't translate, return as-is
-    return "/claude-sessions" + host_path[idx + len("/projects") :]
+    marker_claude = "/projects/"
+    idx = host_path.find(marker_claude)
+    if idx != -1:
+        return "/claude-sessions" + host_path[idx + len("/projects") :]
+        
+    marker_pi = "/sessions/"
+    idx = host_path.find(marker_pi)
+    if idx != -1 and ".pi" in host_path:
+        return "/pi-sessions" + host_path[idx + len("/sessions") :]
+        
+    return host_path  # can't translate, return as-is
 
 
 CAG_SERVER_URL = os.environ.get("CAG_SERVER_URL", "http://localhost:4000")
@@ -164,6 +172,8 @@ def extract_last_assistant_text(transcript_path: str) -> str:
     so the LLM can produce a complete, refined set of triples incrementally.
     """
     last_text = ""
+    is_pi_session = "/pi-sessions/" in transcript_path or ".pi/agent/sessions" in transcript_path
+    
     with open(transcript_path) as f:
         for line in f:
             line = line.strip()
@@ -173,9 +183,21 @@ def extract_last_assistant_text(transcript_path: str) -> str:
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if entry.get("type") != "assistant":
-                continue
-            content = entry.get("message", {}).get("content", "")
+            
+            entry_type = entry.get("type")
+            if is_pi_session:
+                if entry_type != "message":
+                    continue
+                msg = entry.get("message", {})
+                role = msg.get("role")
+                if role != "assistant":
+                    continue
+                content = msg.get("content", "")
+            else:
+                if entry_type != "assistant":
+                    continue
+                content = entry.get("message", {}).get("content", "")
+                
             parts = []
             if isinstance(content, str):
                 parts.append(content)
@@ -249,7 +271,12 @@ def process_message(body: bytes) -> None:
 
     def _run_devkg():
         nonlocal devkg_triple_count
-        from pipeline.jsonl_to_rdf import build_graph
+        
+        if "/pi-sessions/" in container_path or ".pi/agent/sessions" in container_path:
+            from pipeline.pi_to_rdf import build_graph
+        else:
+            from pipeline.jsonl_to_rdf import build_graph
+            
         from pipeline.load_fuseki import ensure_dataset, upload_turtle
 
         graph = build_graph(container_path, skip_extraction=False, model=model)

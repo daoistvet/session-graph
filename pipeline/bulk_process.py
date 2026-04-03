@@ -20,10 +20,9 @@ import sys
 import time
 from pathlib import Path
 
-from pipeline.jsonl_to_rdf import build_graph
-
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
+PI_SESSIONS_DIR = Path.home() / ".pi" / "agent" / "sessions"
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output" / "claude"
 WATERMARK_FILE = OUTPUT_DIR / "watermarks.json"
 
@@ -38,7 +37,7 @@ def find_sessions(
     include_subagents: bool = False,
     sort: str = "name",
 ) -> list[Path]:
-    """Find all JSONL session files under the Claude projects directory.
+    """Find all JSONL session files under the Claude projects directory and pi sessions directory.
 
     Args:
         projects_dir: Root directory to search.
@@ -47,10 +46,17 @@ def find_sessions(
         sort: Sort order — "name" (default, alphabetical), "newest" (most
             recently modified first), or "oldest" (least recently modified first).
     """
-    if not projects_dir.exists():
-        print(f"Warning: {projects_dir} does not exist", file=sys.stderr)
+    all_files = []
+    
+    if CLAUDE_PROJECTS_DIR.exists():
+        all_files.extend(list(CLAUDE_PROJECTS_DIR.rglob("*.jsonl")))
+    
+    if PI_SESSIONS_DIR.exists():
+        all_files.extend(list(PI_SESSIONS_DIR.rglob("*.jsonl")))
+        
+    if not all_files:
+        print(f"Warning: No sessions found in {CLAUDE_PROJECTS_DIR} or {PI_SESSIONS_DIR}", file=sys.stderr)
         return []
-    all_files = list(projects_dir.rglob("*.jsonl"))
     if not include_subagents:
         skipped = sum(1 for f in all_files if is_subagent_file(f))
         all_files = [f for f in all_files if not is_subagent_file(f)]
@@ -199,6 +205,11 @@ def main():
         print(f"\n[{i+1}/{len(to_process)}] {session_path.name}", file=sys.stderr)
 
         try:
+            if ".pi/agent/sessions" in str(session_path):
+                from pipeline.pi_to_rdf import build_graph
+            else:
+                from pipeline.jsonl_to_rdf import build_graph
+
             g = build_graph(
                 str(session_path),
                 skip_extraction=args.skip_extraction,

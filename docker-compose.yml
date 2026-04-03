@@ -48,6 +48,7 @@ services:
       - .env
     volumes:
       - ~/.claude/projects:/claude-sessions:ro
+      - ~/.pi/agent/sessions:/pi-sessions:ro
       - ./output:/app/output
       - ./pipeline/cache:/app/pipeline/cache
     restart: unless-stopped
