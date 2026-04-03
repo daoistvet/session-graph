@@ -2,6 +2,14 @@
 
 All notable changes to session-graph are documented here.
 
+## [0.8.0] - 2026-04-03
+
+### Added
+- **`pi` Coding Agent Support** (`pi_to_rdf.py`) — ingests `pi`'s native `.jsonl` session format. Extracts assistant messages and custom tool calls (`toolCall` / `toolResult`) mapping them to the same RDF ontology alongside Claude Code.
+- **`pi` Native Extension Hook** — added `devkg-hook.ts` as a native `pi` extension that listens to `agent_end` and `session_shutdown` events, safely POSTing to RabbitMQ just like `stop_hook.sh`.
+- **Dual Session Processing** — updated background consumer, `bulk_process`, and `bulk_batch` to seamlessly process `.pi/agent/sessions` and `.claude/projects/` paths with isolated parsing logic but unified graph insertion.
+- **Docker Mounts** — `pipeline-runner` container now automatically mounts `~/.pi/agent/sessions` as a read-only volume (`/pi-sessions`).
+
 ## [0.7.0] - 2026-03-04
 
 ### Added

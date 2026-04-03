@@ -7,6 +7,7 @@ Instructions for Claude Code when working on this project.
 Build a unified developer knowledge graph that connects scattered knowledge from AI coding sessions across multiple platforms:
 
 - Claude Code session logs (`.jsonl`)
+- pi coding agent session logs (`.jsonl`)
 - DeepSeek conversation exports (JSON zip)
 - Grok conversation exports (JSON zip)
 - Warp terminal AI sessions (SQLite)
@@ -70,6 +71,7 @@ Closed-world design: the LLM is instructed to use ONLY these predicates. A norma
 ----------------------------------------------
 
   Claude Code (.jsonl)  -->  jsonl_to_rdf.py    -->  .ttl
+  pi coding agent (.jsonl) --> pi_to_rdf.py     -->  .ttl
   DeepSeek (.json zip)  -->  deepseek_to_rdf.py -->  .ttl
   Grok (.json zip)      -->  grok_to_rdf.py     -->  .ttl
   ChatGPT (.json)       -->  chatgpt_to_rdf.py  -->  .ttl
@@ -160,6 +162,7 @@ pipeline/
 +-- vertex_ai.py                     # Vertex AI auth, Gemini + Claude model wrappers
 +-- triple_extraction.py             # LLM prompt, extraction, normalization, stopwords
 +-- jsonl_to_rdf.py                  # Claude Code JSONL -> RDF (assistant-only extraction)
++-- pi_to_rdf.py                     # pi coding agent JSONL -> RDF
 +-- deepseek_to_rdf.py               # DeepSeek JSON zip -> RDF
 +-- grok_to_rdf.py                   # Grok MongoDB JSON -> RDF
 +-- chatgpt_to_rdf.py                # ChatGPT JSON export -> RDF
@@ -199,18 +202,20 @@ docker compose up -d
 # Fuseki SPARQL UI: http://localhost:3030
 
 # The stop hook (hooks/stop_hook.sh) auto-publishes to RabbitMQ after each Claude Code session.
+# The pi extension (~/.pi/agent/extensions/devkg-hook.ts) auto-publishes after each pi session.
 # The pipeline-runner container processes the queue automatically.
 
-# Manual: single session (Claude Code)
+# Manual: single session (Claude Code or pi)
 source .venv/bin/activate
-python -m pipeline.jsonl_to_rdf <session.jsonl> output/result.ttl
+python -m pipeline.jsonl_to_rdf <claude_session.jsonl> output/result.ttl
+python -m pipeline.pi_to_rdf <pi_session.jsonl> output/result_pi.ttl
 
 # Other platforms
 python -m pipeline.deepseek_to_rdf <zip_path> output/deepseek.ttl --conversation 0
 python -m pipeline.grok_to_rdf <zip_path> output/grok.ttl --conversation 0
 python -m pipeline.warp_to_rdf output/warp.ttl --conversation 0 --min-exchanges 5
 
-# Bulk process all Claude Code sessions
+# Bulk process all Claude Code and pi sessions
 python -m pipeline.bulk_process
 
 # Bulk via Vertex AI Batch Prediction (50% cheaper)
