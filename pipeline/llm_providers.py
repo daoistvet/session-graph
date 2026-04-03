@@ -81,7 +81,11 @@ class GeminiProvider(LLMProvider):
             )
 
         project = os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
-        region = os.environ.get("CLOUD_ML_REGION", "us-east5")
+        # Gemini 3.x models MUST use the global endpoint regardless of env config
+        if model_name.startswith("gemini-3"):
+            region = "global"
+        else:
+            region = os.environ.get("CLOUD_ML_REGION", "us-east5")
         use_vertex = bool(project)
 
         if use_vertex:

@@ -10,9 +10,9 @@ Build a unified developer knowledge graph that connects scattered knowledge from
 - DeepSeek conversation exports (JSON zip)
 - Grok conversation exports (JSON zip)
 - Warp terminal AI sessions (SQLite)
+- ChatGPT conversation exports (JSON)
 - Cursor AI sessions (planned)
 - VS Code Copilot interactions (planned)
-- ChatGPT conversation exports (planned)
 
 The pipeline extracts structured `(subject, predicate, object)` triples from AI assistant messages, links entities to Wikidata via `owl:sameAs`, and loads everything into a SPARQL-queryable triplestore with full provenance.
 
@@ -72,6 +72,7 @@ Closed-world design: the LLM is instructed to use ONLY these predicates. A norma
   Claude Code (.jsonl)  -->  jsonl_to_rdf.py    -->  .ttl
   DeepSeek (.json zip)  -->  deepseek_to_rdf.py -->  .ttl
   Grok (.json zip)      -->  grok_to_rdf.py     -->  .ttl
+  ChatGPT (.json)       -->  chatgpt_to_rdf.py  -->  .ttl
   Warp (SQLite)         -->  warp_to_rdf.py     -->  .ttl
 
   Each parser:
@@ -112,7 +113,7 @@ Closed-world design: the LLM is instructed to use ONLY these predicates. A norma
   +-- For each entity that passes:
   |   +-- Check SQLite cache (.entity_cache.db)
   |   +-- If miss -> agentic_linker_langgraph.py (ReAct agent)
-  |   |   +-- LangGraph + Gemini 2.5 Flash
+  |   |   +-- LangGraph + Gemini 3 Flash Preview (Vertex AI)
   |   |   +-- Tool: search_wikidata (Wikidata API, up to 3 calls)
   |   |   +-- Structured output: WikidataMatch (qid, confidence, reasoning)
   |   |   +-- Caches result in SQLite
@@ -161,6 +162,7 @@ pipeline/
 +-- jsonl_to_rdf.py                  # Claude Code JSONL -> RDF (assistant-only extraction)
 +-- deepseek_to_rdf.py               # DeepSeek JSON zip -> RDF
 +-- grok_to_rdf.py                   # Grok MongoDB JSON -> RDF
++-- chatgpt_to_rdf.py                # ChatGPT JSON export -> RDF
 +-- warp_to_rdf.py                   # Warp SQLite -> RDF (--min-exchanges, --min-triples)
 +-- link_entities.py                 # Wikidata entity linking (agentic default, --heuristic fallback)
 +-- agentic_linker_langgraph.py      # LangGraph ReAct agent for Wikidata disambiguation
@@ -242,7 +244,7 @@ bash tests/test_integration.sh
 - **Closed-world predicate vocabulary**: 24 predicates defined as OWL ObjectProperties. LLM is constrained to this set; any deviation is fuzzy-matched to the closest predicate (fallback: `relatedTo`). Prompt includes wrong/correct examples to keep `relatedTo` usage under 1%.
 - **Dual storage**: Direct edges for fast traversal + reified `KnowledgeTriple` nodes for provenance (links back to source message + session).
 - **Provenance in every SPARQL query**: Templates include `sourceFile`, `platform`, and content snippet. Bidirectional traversal via UNION (relationships may be stored in either direction).
-- **Agentic linker over heuristic**: LangGraph ReAct agent (Gemini 2.5 Flash + Wikidata API tool) achieves 7/7 precision vs ~50% for keyword heuristic. Resolves abbreviations (k8s->kubernetes, otel->OpenTelemetry).
+- **Agentic linker over heuristic**: LangGraph ReAct agent (Gemini 3 Flash Preview via Vertex AI + Wikidata API tool) achieves 7/7 precision vs ~50% for keyword heuristic. Resolves abbreviations (k8s->kubernetes, otel->OpenTelemetry).
 - **Confidence threshold 0.7**: Only emits `owl:sameAs` for high-confidence Wikidata matches. Low-confidence logged to stderr.
 - **Entity deduplication**: Entities sharing the same Wikidata QID get `owl:sameAs` to each other (e.g., `medication` == `medicamento` via Q12140).
 - **Subagent filtering**: `bulk_process.py` filters out subagent `.jsonl` files to avoid 76% knowledge triple duplication from overlapping content with parent sessions.

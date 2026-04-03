@@ -139,6 +139,7 @@ def _get_shared_model():
     """Return a shared LangChain chat model instance (created once).
 
     Auto-detects provider from env vars:
+        Vertex AI (ANTHROPIC_VERTEX_PROJECT_ID) -> ChatGoogleGenerativeAI(vertexai=True)
         GEMINI_API_KEY   -> ChatGoogleGenerativeAI
         OPENAI_API_KEY   -> ChatOpenAI
         ANTHROPIC_API_KEY -> ChatAnthropic
@@ -148,13 +149,23 @@ def _get_shared_model():
     if _shared_model is not None:
         return _shared_model
 
-    if os.environ.get("GEMINI_API_KEY"):
+    project = os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
+    if project:
         from langchain_google_genai import ChatGoogleGenerativeAI
         _shared_model = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash-preview",
+            vertexai=True,
+            project=project,
+            location="global",
+        )
+        print(f"  Linker agent: Gemini 3 Flash (vertex-ai, {project}/global)", file=sys.stderr)
+    elif os.environ.get("GEMINI_API_KEY"):
+        from langchain_google_genai import ChatGoogleGenerativeAI
+        _shared_model = ChatGoogleGenerativeAI(
+            model="gemini-3-flash-preview",
             google_api_key=os.environ["GEMINI_API_KEY"],
         )
-        print("  Linker agent: Gemini (google-generativeai)", file=sys.stderr)
+        print("  Linker agent: Gemini 3 Flash (google-generativeai)", file=sys.stderr)
     elif os.environ.get("OPENAI_API_KEY"):
         from langchain_openai import ChatOpenAI
         _shared_model = ChatOpenAI(model="gpt-4o-mini", temperature=0)

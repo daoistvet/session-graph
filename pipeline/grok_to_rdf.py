@@ -31,7 +31,10 @@ from pipeline.common import (
     slug, create_graph, create_session_node, create_developer_node,
     create_model_node, create_message_node, add_triples_to_graph,
 )
-from pipeline.triple_extraction import extract_triples_gemini
+from pipeline.triple_extraction import (
+    extract_triples_gemini, get_cached_triples, cache_triples,
+    get_truncation_count,
+)
 
 
 # Path inside the zip to the main conversations file
@@ -159,6 +162,7 @@ def build_graph(
     triple_count = 0
     user_count = 0
     assistant_count = 0
+    cache_hits = 0
 
     for i, resp_wrapper in enumerate(responses):
         resp = resp_wrapper.get("response", {})
@@ -197,20 +201,28 @@ def build_graph(
         )
         prev_msg_uri = msg_uri
 
-        # Triple extraction on non-empty messages
-        if not skip_extraction and model is not None and message_text.strip():
-            triples = extract_triples_gemini(model, message_text)
+        # Triple extraction (assistant messages only — that's where the knowledge is)
+        if not skip_extraction and model is not None and message_text.strip() and role == "assistant":
+            cached = get_cached_triples(msg_id)
+            if cached is not None:
+                triples = cached
+                cache_hits += 1
+            else:
+                triples = extract_triples_gemini(model, message_text)
+                cache_triples(msg_id, triples, message_text)
+                time.sleep(0.5)
+
             add_triples_to_graph(g, msg_uri, triples, session_uri)
             triple_count += len(triples)
 
             if triples:
-                print(f"  [{i+1}/{len(responses)}] {len(triples)} triples extracted",
+                label = "cached" if cached is not None else "extracted"
+                print(f"  [{i+1}/{len(responses)}] {len(triples)} triples {label}",
                       file=sys.stderr)
 
-            time.sleep(0.5)
-
+    cache_msg = f", {cache_hits} cache hits" if cache_hits else ""
     print(f"  Processed: {user_count} user messages, {assistant_count} assistant messages, "
-          f"{triple_count} knowledge triples", file=sys.stderr)
+          f"{triple_count} knowledge triples{cache_msg}", file=sys.stderr)
 
     return g
 
@@ -246,19 +258,25 @@ def main():
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Initialize LLM provider
-    gemini_model = None
+    llm_model = None
     if not args.skip_extraction:
         from pipeline.llm_providers import get_provider
-        gemini_model = get_provider(provider_name=args.provider, model_name=args.model)
+        llm_model = get_provider(provider_name=args.provider, model_name=args.model)
 
     g = build_graph(
         data, args.conversation, str(input_path),
         skip_extraction=args.skip_extraction,
-        model=gemini_model,
+        model=llm_model,
         developer=args.developer,
     )
 
     print(f"  Total RDF triples: {len(g)}", file=sys.stderr)
+
+    # Report truncation events if any occurred
+    tc = get_truncation_count()
+    if tc > 0:
+        print(f"  Truncated responses: {tc} (salvaged where possible)", file=sys.stderr)
+
     print(f"  Writing to: {output_path}", file=sys.stderr)
 
     g.serialize(destination=str(output_path), format="turtle")

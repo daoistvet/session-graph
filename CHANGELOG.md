@@ -2,6 +2,20 @@
 
 All notable changes to session-graph are documented here.
 
+## [0.7.0] - 2026-03-04
+
+### Added
+- **ChatGPT parser** (`chatgpt_to_rdf.py`) — ingests OpenAI conversation export JSON, producing same RDF ontology as all other parsers. 639 conversations → 29,249 knowledge triples.
+- **Multi-platform Vertex AI batch ingestion** — extended batch pipeline to Grok (416 msgs), DeepSeek (132 msgs), and ChatGPT (3,412 msgs) using `gemini-3-flash-preview` on `global` endpoint.
+- **Gemini 3 Flash Preview** — upgraded both triple extraction (batch) and agentic entity linker from Gemini 2.5 Flash to `gemini-3-flash-preview`.
+
+### Changed
+- **`agentic_linker_langgraph.py`** — Vertex AI is now the first detection priority (before `GEMINI_API_KEY`). Uses `vertexai=True, project=project, location="global"` for Gemini 3.x compatibility.
+- **Knowledge graph scale** — 1,537 sessions / 97,910 knowledge triples / 2M+ RDF triples across 4 platforms (claude-code 734, chatgpt 639, grok 122, deepseek 42).
+
+### Fixed
+- **Batch metadata format** — Vertex AI requires metadata as a JSON string, not a raw dict. ChatGPT batch initially failed with `"unsupported type"` error; fixed by wrapping metadata with `json.dumps()`.
+
 ## [0.6.0] - 2026-02-21
 
 ### Added

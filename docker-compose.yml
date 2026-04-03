@@ -9,6 +9,7 @@ services:
       - FUSEKI_DATASET_1=devkg
     volumes:
       - fuseki-data:/fuseki
+    restart: unless-stopped
 
   rabbitmq:
     image: rabbitmq:3-management
@@ -26,6 +27,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
 
   pipeline-runner:
     build:
@@ -41,6 +43,7 @@ services:
       - RABBITMQ_URL=amqp://devkg:devkg@rabbitmq:5672/
       - FUSEKI_URL=http://fuseki:3030
       - FUSEKI_DATASET=devkg
+      - CAG_SERVER_URL=http://host.docker.internal:4000
     env_file:
       - .env
     volumes:

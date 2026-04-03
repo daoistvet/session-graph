@@ -42,17 +42,17 @@ The key insight: **a knowledge graph without relationships is just a tag cloud.*
 
 ## Results
 
-From real-world usage across 52 sessions:
+From real-world usage across 1,537 sessions:
 
 | Metric | Value |
 |--------|-------|
-| Total triples in Fuseki | 1,334,432 |
-| Sessions indexed | 607+ |
-| Knowledge triples extracted | 47,868+ |
-| Distinct entities | ~8,000+ |
-| Wikidata-linked entities | 4,774 (~33%) |
+| Total triples in Fuseki | 2,027,178 |
+| Sessions indexed | 1,537 |
+| Knowledge triples extracted | 97,910 |
+| Distinct entities | ~12,000+ |
+| Wikidata-linked entities | ~5,000 (~33%) |
 | Curated predicates | 24 (with <1% `relatedTo` fallback) |
-| Platforms supported | 4 (Claude Code, DeepSeek, Grok, Warp) |
+| Platforms supported | 5 (Claude Code, ChatGPT, DeepSeek, Grok, Warp) |
 | Entity linking precision | 7/7 (agentic ReAct linker) |
 | Cost per 600 sessions | ~$0.60 (Vertex AI batch pricing) |
 
@@ -73,7 +73,7 @@ Claude Code (.jsonl)  --+
 DeepSeek (.json zip)  --+     triple_extraction.py
 Grok (.json zip)      --+--->  (LLM extracts s,p,o   ---> Apache Jena Fuseki
 Warp (SQLite)         --+      from each assistant         (SPARQL endpoint)
-ChatGPT (planned)     --+      message using 24                 |
+ChatGPT (.json)       --+      message using 24                 |
 Cursor (planned)      --+      curated predicates)              |
                                      |                          v
                                      v                    SPARQL Queries
@@ -131,7 +131,7 @@ Real-time Loop (Claude Code):
 | DeepSeek | `deepseek_to_rdf.py` | JSON zip export | Production |
 | Grok | `grok_to_rdf.py` | JSON (MongoDB export) | Production |
 | Warp | `warp_to_rdf.py` | SQLite | Production |
-| ChatGPT | -- | JSON export | Planned |
+| ChatGPT | `chatgpt_to_rdf.py` | JSON export | Production |
 | Cursor | -- | SQLite / Markdown | Planned |
 | VS Code Copilot | -- | JSON | Planned |
 
@@ -507,6 +507,7 @@ session-graph/
 |   +-- jsonl_to_rdf.py                   # Claude Code JSONL --> RDF
 |   +-- deepseek_to_rdf.py                # DeepSeek JSON --> RDF
 |   +-- grok_to_rdf.py                    # Grok JSON --> RDF
+|   +-- chatgpt_to_rdf.py                 # ChatGPT JSON --> RDF
 |   +-- warp_to_rdf.py                    # Warp SQLite --> RDF
 |   +-- link_entities.py                  # Wikidata entity linking (agentic)
 |   +-- agentic_linker_langgraph.py       # LangGraph ReAct agent
@@ -566,7 +567,7 @@ The entire pipeline runs for less than $2 on a typical developer's full session 
 - **Frequency-based linking**: `--min-sessions 2` (default) only links entities appearing in 2+ sessions. ~77% of entities are single-session noise, dramatically reducing linking cost.
 - **Dual storage**: Direct edges for fast graph traversal AND reified `KnowledgeTriple` nodes for provenance. Query either depending on your needs.
 - **Context-aware entity linking**: Neighboring KnowledgeTriple relationships are passed as disambiguation context to the ReAct agent. "condition" resolves to disease (not programming conditional) when surrounded by medical triples.
-- **Agentic linker over heuristic**: LangGraph ReAct agent (LLM + Wikidata API tool) achieves 7/7 precision vs ~50% for keyword heuristic. Resolves abbreviations like k8s, otel, tf.
+- **Agentic linker over heuristic**: LangGraph ReAct agent (Gemini 3 Flash Preview via Vertex AI + Wikidata API tool) achieves 7/7 precision vs ~50% for keyword heuristic. Resolves abbreviations like k8s, otel, tf.
 - **Triple extraction cache**: SQLite cache (`.triple_cache.db`) keyed by message UUID. The stop hook fires on every Claude Code pause, causing re-processing. The cache ensures each message's LLM extraction only happens once — re-runs rebuild the RDF graph but skip API calls for cached messages.
 - **Incremental real-time ingestion**: Stop hook → RabbitMQ → pipeline-runner → Fuseki. Each session pause triggers automatic extraction and loading. The triple cache makes repeated processing free.
 
