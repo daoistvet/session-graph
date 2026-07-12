@@ -497,6 +497,145 @@ def extract_entity_contexts(ttl_paths: List[str]) -> Dict[str, str]:
 # ---------------------------------------------------------------------------
 
 DEFAULT_WORKERS = 8
+DEFAULT_MAX_AGENTIC_CALLS = 25
+
+
+def _entity_contexts_from_graph(g: Graph) -> Dict[str, str]:
+    """Build disambiguation context strings from KnowledgeTriple nodes in a graph."""
+    from collections import defaultdict
+
+    entity_triples: Dict[str, set] = defaultdict(set)
+    for triple_node in g.subjects(RDF.type, DEVKG.KnowledgeTriple):
+        pred_label = None
+        subj_label = None
+        obj_label = None
+
+        for p in g.objects(triple_node, DEVKG.triplePredicateLabel):
+            pred_label = str(p)
+            break
+        for s in g.objects(triple_node, DEVKG.tripleSubject):
+            for sl in g.objects(s, RDFS.label):
+                subj_label = str(sl).strip()
+                break
+            break
+        for o in g.objects(triple_node, DEVKG.tripleObject):
+            for ol in g.objects(o, RDFS.label):
+                obj_label = str(ol).strip()
+                break
+            break
+
+        if subj_label and pred_label and obj_label:
+            triple_str = f"{subj_label} {pred_label} {obj_label}"
+            entity_triples[subj_label.lower()].add(triple_str)
+            entity_triples[obj_label.lower()].add(triple_str)
+
+    contexts = {}
+    for label, triples in entity_triples.items():
+        sample = sorted(triples)[:5]
+        quoted = ", ".join(f'"{t}"' for t in sample)
+        contexts[label] = f"appears in knowledge triples: {quoted}"
+    return contexts
+
+
+def link_entities_into_graph(
+    graph: Graph,
+    *,
+    max_workers: int = DEFAULT_WORKERS,
+    max_agentic_calls: int = DEFAULT_MAX_AGENTIC_CALLS,
+    agentic: bool = True,
+) -> dict:
+    """Add Wikidata owl:sameAs triples to an in-memory session graph (cache-first).
+
+    Phase 1: SQLite cache lookups — no LLM calls.
+    Phase 2: Parallel agentic linker for cache misses (capped per invocation).
+
+    Returns stats dict with cache_hits, linked, negative_cache_hits, agentic_calls, skipped.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    stats = {
+        "cache_hits": 0,
+        "linked": 0,
+        "negative_cache_hits": 0,
+        "agentic_calls": 0,
+        "skipped": 0,
+        "already_linked": 0,
+    }
+
+    # Collect entity labels; skip those already linked to Wikidata
+    labels: set[str] = set()
+    for entity_node in graph.subjects(RDF.type, DEVKG.Entity):
+        if any(graph.triples((entity_node, OWL.sameAs, None))):
+            stats["already_linked"] += 1
+            continue
+        for label_lit in graph.objects(entity_node, RDFS.label):
+            labels.add(str(label_lit).strip())
+            break
+
+    if not labels:
+        return stats
+
+    aliases = load_aliases()
+    cache_conn = init_cache()
+    contexts = _entity_contexts_from_graph(graph) if agentic else {}
+    cache_misses: list[tuple[str, URIRef]] = []
+
+    try:
+        for raw_label in labels:
+            label = normalize_label(raw_label, aliases)
+            if not is_linkable_entity(label):
+                stats["skipped"] += 1
+                continue
+
+            uri = entity_uri(label)
+            cached = cache_get(cache_conn, label)
+            if cached is not None:
+                if cached.get("qid") and cached.get("confidence", 0) >= CONFIDENCE_THRESHOLD:
+                    graph.add((uri, OWL.sameAs, WD[cached["qid"]]))
+                    stats["cache_hits"] += 1
+                    stats["linked"] += 1
+                else:
+                    stats["negative_cache_hits"] += 1
+                continue
+
+            cache_misses.append((label, uri))
+
+        if cache_misses and agentic and max_agentic_calls > 0:
+            _ensure_agentic_init()
+            to_resolve = cache_misses[:max_agentic_calls]
+            if len(cache_misses) > max_agentic_calls:
+                stats["skipped"] += len(cache_misses) - max_agentic_calls
+
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(to_resolve))) as executor:
+                future_to_info = {
+                    executor.submit(
+                        _agentic_link_one,
+                        label,
+                        contexts.get(label.lower(), "developer knowledge graph entity"),
+                    ): (label, uri)
+                    for label, uri in to_resolve
+                }
+
+                for future in as_completed(future_to_info):
+                    label, uri = future_to_info[future]
+                    stats["agentic_calls"] += 1
+                    try:
+                        _, qid, confidence, description, _reasoning, _elapsed = future.result()
+                        if qid and qid.lower() not in ("none", "error", ""):
+                            cache_put(cache_conn, label, qid, description, confidence)
+                            if confidence >= CONFIDENCE_THRESHOLD:
+                                graph.add((uri, OWL.sameAs, WD[qid]))
+                                stats["linked"] += 1
+                        else:
+                            cache_put(cache_conn, label, None, None, 0.0)
+                            stats["negative_cache_hits"] += 1
+                    except Exception:
+                        cache_put(cache_conn, label, None, None, 0.0)
+                        stats["negative_cache_hits"] += 1
+    finally:
+        cache_conn.close()
+
+    return stats
 
 
 def _agentic_link_one(label: str, context: str = "developer knowledge graph entity") -> tuple:

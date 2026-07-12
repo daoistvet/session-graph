@@ -320,6 +320,22 @@ def process_message(body: bytes) -> None:
             session_uri = DATA[f"session/{uri_slug(session_id or basename)}"]
             graph.add((session_uri, DEVKG.hasCorrelationId, Literal(orch_session_id)))
 
+        if os.environ.get("DEVKG_SKIP_LINKING", "").lower() not in ("1", "true", "yes"):
+            try:
+                from pipeline.link_entities import link_entities_into_graph
+                link_stats = link_entities_into_graph(graph)
+                log(
+                    "INFO",
+                    "  wikidata: "
+                    f"{link_stats['linked']} linked "
+                    f"({link_stats['cache_hits']} cache, "
+                    f"{link_stats['agentic_calls']} agentic, "
+                    f"{link_stats['negative_cache_hits']} negative, "
+                    f"{link_stats['skipped']} skipped)",
+                )
+            except Exception as e:
+                log("WARN", f"  wikidata linking failed (continuing): {e}")
+
         write_turtle_atomic(graph, output_file)
         devkg_triple_count = len(graph)
 
