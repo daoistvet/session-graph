@@ -88,7 +88,8 @@ Real-time Loops:
   Claude Code session pause/end → stop_hook.sh → RabbitMQ → pipeline-runner → Fuseki
   pi session end/shutdown        → pi devkg-hook  → RabbitMQ → pipeline-runner → Fuseki
   Codex session file changes     → codex-publisher → RabbitMQ → pipeline-runner → Fuseki
-                                              (triple cache: 0 API calls for seen messages)
+                                              (extract + Wikidata link + upload;
+                                               triple/entity caches: 0 API calls for seen data)
 ```
 
 ### Pipeline in Detail
@@ -201,9 +202,13 @@ Codex writes/updates a session file
   → codex-publisher container detects change and publishes to RabbitMQ
 
 Then pipeline-runner consumes jobs:
-  → Extracts triples, generates .ttl, uploads to Fuseki
+  → Extracts triples (message UUID cache)
+  → Links entities to Wikidata inline (entity cache first; agentic ReAct on misses, capped per job)
+  → Writes .ttl and uploads to Fuseki
   → Failed jobs go to dead-letter queue for inspection
 ```
+
+Set `DEVKG_SKIP_LINKING=1` on `pipeline-runner` to disable inline Wikidata linking (extract + Fuseki only). Batch `link_entities.py` remains available for catch-up / `--min-sessions` corpus passes.
 
 Configure the hook in `~/.claude/settings.json`:
 
@@ -234,15 +239,16 @@ python -m pipeline.bulk_batch collect
 # Option B: Sequential (simpler, works with any provider)
 python -m pipeline.bulk_process --limit 50 --sort newest --skip-linking
 
-# Then link entities to Wikidata (both options)
+# Then link entities to Wikidata (batch catch-up / --min-sessions filter)
+# New RabbitMQ jobs already link inline; use this for history or corpus passes.
 PYTHONUNBUFFERED=1 python -m pipeline.link_entities \
   --input output/claude/*.ttl --output output/claude/wikidata_links.ttl --workers 8
 
 # Load into Fuseki (--auth required for Docker Fuseki)
-python -m pipeline.load_fuseki output/claude/*.ttl --auth admin:admin
+python -m pipeline.load_fuseki output/claude/*.ttl output/claude/wikidata_links.ttl --auth admin:admin
 ```
 
-After the backfill, automatic processing takes over — every future session is indexed as you work, with no manual steps.
+After the backfill, automatic processing takes over — every future session is indexed and Wikidata-linked as you work, with no manual steps.
 
 ### Other Platforms (Cross-Platform Insights)
 
@@ -530,10 +536,11 @@ session-graph/
 |   +-- .entity_cache.db                  # SQLite cache for Wikidata links (auto-created)
 |   +-- .triple_cache.db                  # SQLite cache for extracted triples (auto-created)
 +-- docker/
-|   +-- queue_consumer.py                 # RabbitMQ consumer: dequeues jobs, runs pipeline
+|   +-- queue_consumer.py                 # RabbitMQ consumer: extract + Wikidata link + Fuseki
+|   +-- codex_publisher.py                # Polls Codex sessions and publishes to RabbitMQ
 +-- hooks/stop_hook.sh                    # Post-session hook: publishes to RabbitMQ (~33ms)
 +-- Dockerfile.pipeline                   # Python 3.12 image with pipeline deps
-+-- docker-compose.yml                    # fuseki + rabbitmq + pipeline-runner
++-- docker-compose.yml                    # fuseki + rabbitmq + pipeline-runner + codex-publisher
 +-- .claude/skills/devkg-sparql/          # SPARQL skill for Claude Code
 +-- tests/test_integration.sh             # 16-point end-to-end integration test
 +-- output/                               # Generated .ttl files
@@ -579,7 +586,7 @@ The entire pipeline runs for less than $2 on a typical developer's full session 
 - **Context-aware entity linking**: Neighboring KnowledgeTriple relationships are passed as disambiguation context to the ReAct agent. "condition" resolves to disease (not programming conditional) when surrounded by medical triples.
 - **Agentic linker over heuristic**: LangGraph ReAct agent (Gemini 3 Flash Preview via Vertex AI + Wikidata API tool) achieves 7/7 precision vs ~50% for keyword heuristic. Resolves abbreviations like k8s, otel, tf.
 - **Triple extraction cache**: SQLite cache (`.triple_cache.db`) keyed by message UUID. The stop hook fires on every Claude Code pause, causing re-processing. The cache ensures each message's LLM extraction only happens once — re-runs rebuild the RDF graph but skip API calls for cached messages.
-- **Incremental real-time ingestion**: Stop hook → RabbitMQ → pipeline-runner → Fuseki. Each session pause triggers automatic extraction and loading. The triple cache makes repeated processing free.
+- **Incremental real-time ingestion**: Stop hook / pi hook / Codex publisher → RabbitMQ → pipeline-runner → Fuseki. Each job runs triple extraction, cache-first Wikidata linking (`link_entities_into_graph`), then upload. Triple and entity caches make repeated processing cheap; agentic Wikidata calls are capped per job (`DEVKG_SKIP_LINKING=1` to disable linking).
 
 ## Troubleshooting
 

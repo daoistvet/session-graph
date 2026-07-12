@@ -104,7 +104,17 @@ Closed-world design: the LLM is instructed to use ONLY these predicates. A norma
 2. ENTITY LINKING (RDF -> Wikidata owl:sameAs)
 ----------------------------------------------
 
-  .ttl files -->  link_entities.py -->  wikidata_links.ttl
+  Two entry points:
+
+  A) Real-time (RabbitMQ consumer -- default for new sessions)
+     queue_consumer.py calls link_entities_into_graph(graph) after build_graph,
+     before writing .ttl and uploading to Fuseki.
+     +-- Cache-first (pipeline/cache/entity_cache.db)
+     +-- Agentic ReAct on misses only (capped per job, default 25)
+     +-- Non-fatal on linker failure; DEVKG_SKIP_LINKING=1 disables
+
+  B) Batch / catch-up (CLI)
+     .ttl files -->  link_entities.py -->  wikidata_links.ttl
 
   +-- Extracts all devkg:Entity labels from input .ttl files
   +-- Normalizes via entity_aliases.json (161 mappings: k8s->kubernetes, etc.)
@@ -112,8 +122,9 @@ Closed-world design: the LLM is instructed to use ONLY these predicates. A norma
   |   (catches entities that slipped through Level 1 or pre-date the filter)
   +-- Frequency filter: --min-sessions N (default 2) -- only links entities
   |   appearing in 2+ sessions. Reduces linking set by ~77%.
+  |   (batch path only -- realtime links per-session entities without this filter)
   +-- For each entity that passes:
-  |   +-- Check SQLite cache (.entity_cache.db)
+  |   +-- Check SQLite cache (pipeline/cache/entity_cache.db)
   |   +-- If miss -> agentic_linker_langgraph.py (ReAct agent)
   |   |   +-- LangGraph + Gemini 3 Flash Preview (Vertex AI)
   |   |   +-- Tool: search_wikidata (Wikidata API, up to 3 calls)
@@ -121,7 +132,7 @@ Closed-world design: the LLM is instructed to use ONLY these predicates. A norma
   |   |   +-- Caches result in SQLite
   |   +-- Confidence threshold (0.7) -- below -> no owl:sameAs emitted
   +-- Entity dedup: same QID -> owl:sameAs between aliases
-  +-- Outputs wikidata_links.ttl
+  +-- Outputs wikidata_links.ttl (batch) or mutates the session graph (realtime)
 
 
 3. BULK PROCESSING (orchestrator)
@@ -183,9 +194,10 @@ cognee_eval/                         # Cognee evaluation (rejected -- no RDF out
 research/                            # Wikidata entity linking research docs
 docker/
 +-- __init__.py                      # Package marker
-+-- queue_consumer.py                # RabbitMQ consumer (pika): dequeues jobs, runs pipeline, uploads to Fuseki
++-- queue_consumer.py                # RabbitMQ consumer: extract + inline Wikidata link + Fuseki upload
++-- codex_publisher.py               # Polls ~/.codex/sessions and publishes jobs to RabbitMQ
 Dockerfile.pipeline                   # Python 3.12 image with pipeline deps + pika
-docker-compose.yml                    # fuseki + rabbitmq + pipeline-runner
+docker-compose.yml                    # fuseki + rabbitmq + pipeline-runner + codex-publisher
 hooks/stop_hook.sh                    # Post-session hook: curl POST to RabbitMQ HTTP API (~33ms)
 tests/test_integration.sh             # 16-point end-to-end integration test
 output/                               # Generated .ttl files and batch job manifests
@@ -203,7 +215,9 @@ docker compose up -d
 
 # The stop hook (hooks/stop_hook.sh) auto-publishes to RabbitMQ after each Claude Code session.
 # The pi extension (~/.pi/agent/extensions/devkg-hook.ts) auto-publishes after each pi session.
-# The pipeline-runner container processes the queue automatically.
+# codex-publisher polls ~/.codex/sessions and publishes on file changes.
+# pipeline-runner: extract triples → inline Wikidata link → Fuseki
+#   (DEVKG_SKIP_LINKING=1 to skip linking)
 
 # Manual: single session (Claude Code or pi)
 source .venv/bin/activate
@@ -260,7 +274,8 @@ bash tests/test_integration.sh
 - **Entity boundaries**: Prompt enforces 1-3 word entities; `is_valid_entity()` rejects 4+ words, paths, dimension strings, single chars.
 - **Context-aware entity linking**: `link_entities.py` extracts neighboring KnowledgeTriple relationships from .ttl files and passes them as context to the ReAct agent. Improves disambiguation for ambiguous labels (e.g., "condition" -> disease vs programming conditional).
 - **`FILTER(LANG(?label) = "")`**: Used in all SPARQL queries to avoid duplicate rows from lang-tagged vs untagged literals.
-- **Triple extraction cache**: SQLite cache (`.triple_cache.db`) keyed by message UUID. The stop hook fires on every Claude Code pause (not just session end), causing the same JSONL to be re-processed repeatedly. The cache ensures each message's LLM extraction only happens once — re-runs rebuild the full RDF graph (cheap) but skip API calls for cached messages. Stores `text_hash` for auditability. Shared between local CLI and Docker container via volume mount.
+- **Triple extraction cache**: SQLite cache (`pipeline/cache/triple_cache.db`) keyed by message UUID. The stop hook fires on every Claude Code pause (not just session end), causing the same JSONL to be re-processed repeatedly. The cache ensures each message's LLM extraction only happens once — re-runs rebuild the full RDF graph (cheap) but skip API calls for cached messages. Stores `text_hash` for auditability. Shared between local CLI and Docker container via volume mount.
+- **Realtime Wikidata linking**: `queue_consumer.py` calls `link_entities_into_graph()` after extraction so new Claude/pi/Codex sessions get `owl:sameAs` before Fuseki upload. Cache-first; agentic misses capped per job; `DEVKG_SKIP_LINKING=1` disables. Batch `link_entities.py` keeps `--min-sessions` for corpus catch-up.
 
 ## Known Issues
 

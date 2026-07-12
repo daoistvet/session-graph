@@ -2,6 +2,16 @@
 
 All notable changes to session-graph are documented here.
 
+## [0.9.0] - 2026-07-12
+
+### Added
+- **Codex session ingestion** (`codex_to_rdf.py` + `codex_publisher.py`) — watches `~/.codex/sessions`, publishes to RabbitMQ, and parses Codex JSONL into the same DevKG ontology.
+- **Realtime Wikidata linking** — `queue_consumer.py` calls `link_entities_into_graph()` after extraction (cache-first, capped agentic ReAct on misses). `DEVKG_SKIP_LINKING=1` disables inline linking.
+
+### Changed
+- Real-time loop docs (README / CLAUDE.md) now describe extract → Wikidata link → Fuseki for Claude, pi, and Codex jobs.
+- Batch `link_entities.py` remains the path for corpus catch-up and `--min-sessions` frequency filtering.
+
 ## [0.8.0] - 2026-04-03
 
 ### Added
