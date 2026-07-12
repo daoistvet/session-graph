@@ -49,8 +49,29 @@ services:
     volumes:
       - ~/.claude/projects:/claude-sessions:ro
       - ~/.pi/agent/sessions:/pi-sessions:ro
+      - ~/.codex/sessions:/codex-sessions:ro
       - ./output:/app/output
       - ./pipeline/cache:/app/pipeline/cache
+    restart: unless-stopped
+
+  codex-publisher:
+    build:
+      context: .
+      dockerfile: Dockerfile.pipeline
+    container_name: devkg-codex-publisher
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      - RABBITMQ_URL=amqp://devkg:devkg@rabbitmq:5672/
+      - RABBITMQ_QUEUE=devkg_jobs
+      - CODEX_SESSIONS_GLOB=/codex-sessions/**/*.jsonl
+      - CODEX_POLL_INTERVAL_SECONDS=30
+      - CODEX_WATCHER_STATE=/app/output/codex/watcher_state.json
+    command: ["python", "docker/codex_publisher.py"]
+    volumes:
+      - ~/.codex/sessions:/codex-sessions:ro
+      - ./output:/app/output
     restart: unless-stopped
 
 volumes:

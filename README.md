@@ -84,8 +84,10 @@ Cursor (planned)      --+      curated predicates)              |
                                                         Claude Code Skill
                                                      (natural language -> SPARQL)
 
-Real-time Loop (Claude Code):
-  Session pause → stop_hook.sh → RabbitMQ → pipeline-runner → Fuseki
+Real-time Loops:
+  Claude Code session pause/end → stop_hook.sh → RabbitMQ → pipeline-runner → Fuseki
+  pi session end/shutdown        → pi devkg-hook  → RabbitMQ → pipeline-runner → Fuseki
+  Codex session file changes     → codex-publisher → RabbitMQ → pipeline-runner → Fuseki
                                               (triple cache: 0 API calls for seen messages)
 ```
 
@@ -132,6 +134,7 @@ Real-time Loop (Claude Code):
 | Grok | `grok_to_rdf.py` | JSON (MongoDB export) | Production |
 | Warp | `warp_to_rdf.py` | SQLite | Production |
 | ChatGPT | `chatgpt_to_rdf.py` | JSON export | Production |
+| Codex | `codex_to_rdf.py` | JSONL (`~/.codex/sessions`) | Production |
 | Cursor | -- | SQLite / Markdown | Planned |
 | VS Code Copilot | -- | JSON | Planned |
 
@@ -185,12 +188,19 @@ python -m pipeline.load_fuseki output/*.ttl --auth admin:admin
 
 ### Automatic Processing (Recommended)
 
-With Docker Compose running, every Claude Code session is automatically processed:
+With Docker Compose running, new sessions are automatically processed:
 
 ```
 Claude Code session ends
   → stop_hook.sh publishes to RabbitMQ (~33ms, non-blocking)
-  → pipeline-runner container picks up the job
+
+pi session ends
+  → pi devkg extension publishes to RabbitMQ
+
+Codex writes/updates a session file
+  → codex-publisher container detects change and publishes to RabbitMQ
+
+Then pipeline-runner consumes jobs:
   → Extracts triples, generates .ttl, uploads to Fuseki
   → Failed jobs go to dead-letter queue for inspection
 ```

@@ -53,6 +53,22 @@ def log(level: str, msg: str):
     print(f"[{level}] {msg}", file=sys.stderr, flush=True)
 
 
+def write_turtle_atomic(graph, output_file: Path) -> None:
+    """Serialize Turtle to a temp file and replace atomically on success."""
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_path = tempfile.mkstemp(prefix=f".{output_file.stem}.", suffix=".ttl.tmp", dir=output_file.parent)
+    os.close(fd)
+    try:
+        graph.serialize(destination=tmp_path, format="turtle")
+        os.replace(tmp_path, output_file)
+    except Exception:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def file_hash(path: str) -> str:
     """Compute SHA256 hash of a file's contents."""
     h = hashlib.sha256()
@@ -117,20 +133,27 @@ def translate_path(host_path: str) -> str:
 
     Host: ~/.claude/projects/{slug}/{session}.jsonl
     Container: /claude-sessions/{slug}/{session}.jsonl
-    
+
     Host: ~/.pi/agent/sessions/{slug}/{session}.jsonl
     Container: /pi-sessions/{slug}/{session}.jsonl
+
+    Host: ~/.codex/sessions/{yyyy}/{mm}/{dd}/{session}.jsonl
+    Container: /codex-sessions/{yyyy}/{mm}/{dd}/{session}.jsonl
     """
     marker_claude = "/projects/"
     idx = host_path.find(marker_claude)
     if idx != -1:
         return "/claude-sessions" + host_path[idx + len("/projects") :]
-        
+
     marker_pi = "/sessions/"
     idx = host_path.find(marker_pi)
     if idx != -1 and ".pi" in host_path:
         return "/pi-sessions" + host_path[idx + len("/sessions") :]
-        
+
+    idx = host_path.find("/.codex/sessions/")
+    if idx != -1:
+        return "/codex-sessions" + host_path[idx + len("/.codex/sessions") :]
+
     return host_path  # can't translate, return as-is
 
 
@@ -165,15 +188,14 @@ def post_cag_triples(session_id: str, triples: list[dict], replace: bool = False
 
 
 def extract_last_assistant_text(transcript_path: str) -> str:
-    """Extract only the last assistant message text from a JSONL transcript.
+    """Extract only the last assistant message text from a transcript.
 
-    Instead of concatenating all assistant messages (which can exceed LLM limits),
-    we extract only the most recent one. The CAG cache provides prior context
-    so the LLM can produce a complete, refined set of triples incrementally.
+    Supports Claude JSONL, pi JSONL, and Codex JSONL formats.
     """
     last_text = ""
     is_pi_session = "/pi-sessions/" in transcript_path or ".pi/agent/sessions" in transcript_path
-    
+    is_codex_session = "/codex-sessions/" in transcript_path or ".codex/sessions" in transcript_path
+
     with open(transcript_path) as f:
         for line in f:
             line = line.strip()
@@ -183,7 +205,7 @@ def extract_last_assistant_text(transcript_path: str) -> str:
                 entry = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            
+
             entry_type = entry.get("type")
             if is_pi_session:
                 if entry_type != "message":
@@ -193,17 +215,25 @@ def extract_last_assistant_text(transcript_path: str) -> str:
                 if role != "assistant":
                     continue
                 content = msg.get("content", "")
+            elif is_codex_session:
+                if entry_type != "response_item":
+                    continue
+                payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else entry
+                if payload.get("type") != "message" or payload.get("role") != "assistant":
+                    continue
+                content = payload.get("content", "")
             else:
                 if entry_type != "assistant":
                     continue
                 content = entry.get("message", {}).get("content", "")
-                
+
             parts = []
             if isinstance(content, str):
                 parts.append(content)
             elif isinstance(content, list):
                 for block in content:
-                    if block.get("type") == "text":
+                    btype = block.get("type") if isinstance(block, dict) else None
+                    if btype in ("text", "output_text"):
                         parts.append(block.get("text", ""))
             text = "\n\n".join(p for p in parts if p.strip())
             if text.strip():
@@ -274,6 +304,8 @@ def process_message(body: bytes) -> None:
         
         if "/pi-sessions/" in container_path or ".pi/agent/sessions" in container_path:
             from pipeline.pi_to_rdf import build_graph
+        elif "/codex-sessions/" in container_path or ".codex/sessions" in container_path:
+            from pipeline.codex_to_rdf import build_graph
         else:
             from pipeline.jsonl_to_rdf import build_graph
             
@@ -288,7 +320,7 @@ def process_message(body: bytes) -> None:
             session_uri = DATA[f"session/{uri_slug(session_id or basename)}"]
             graph.add((session_uri, DEVKG.hasCorrelationId, Literal(orch_session_id)))
 
-        graph.serialize(destination=str(output_file), format="turtle")
+        write_turtle_atomic(graph, output_file)
         devkg_triple_count = len(graph)
 
         ensure_dataset(FUSEKI_URL, FUSEKI_DATASET, auth=FUSEKI_AUTH)

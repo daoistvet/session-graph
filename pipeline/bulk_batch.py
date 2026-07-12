@@ -162,7 +162,9 @@ def extract_messages_from_jsonl(jsonl_path: Path) -> list[dict]:
     messages = []
     session_id = None
     entries = []
-    is_pi_session = ".pi/agent/sessions" in str(jsonl_path)
+    path_str = str(jsonl_path)
+    is_pi_session = ".pi/agent/sessions" in path_str
+    is_codex_session = ".codex/sessions" in path_str
 
     with open(jsonl_path, "r") as f:
         for i, line in enumerate(f):
@@ -175,8 +177,26 @@ def extract_messages_from_jsonl(jsonl_path: Path) -> list[dict]:
                 continue
 
             entry_type = entry.get("type")
-            
-            if is_pi_session:
+
+            if is_codex_session:
+                payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else entry
+                if entry_type == "session_meta":
+                    if session_id is None and payload.get("id"):
+                        session_id = payload["id"]
+                    continue
+                if entry_type != "response_item":
+                    continue
+                if payload.get("type") != "message":
+                    continue
+                role = payload.get("role")
+                if role not in ("user", "assistant"):
+                    continue
+                entries.append({
+                    "type": role,
+                    "id": payload.get("id"),
+                    "message": {"content": payload.get("content", "")},
+                })
+            elif is_pi_session:
                 if entry_type == "session":
                     if session_id is None and entry.get("id"):
                         session_id = entry["id"]
@@ -210,14 +230,17 @@ def extract_messages_from_jsonl(jsonl_path: Path) -> list[dict]:
             text_parts.append(content)
         elif isinstance(content, list):
             for block in content:
-                if block.get("type") == "text":
+                block_type = block.get("type")
+                if block_type in ("text", "output_text"):
                     text_parts.append(block.get("text", ""))
 
         full_text = "\n".join(t for t in text_parts if t.strip())
         if len(full_text.strip()) < 30:
             continue
 
-        if is_pi_session:
+        if is_codex_session:
+            msg_uuid = entry.get("id") or f"{session_id}-msg-{i}"
+        elif is_pi_session:
             msg_uuid = entry.get("id", f"unknown-{i}")
         else:
             msg_uuid = entry.get("uuid", f"unknown-{i}")
@@ -527,6 +550,8 @@ def cmd_collect(args):
         try:
             if ".pi/agent/sessions" in str(source_path):
                 from pipeline.pi_to_rdf import build_graph
+            elif ".codex/sessions" in str(source_path):
+                from pipeline.codex_to_rdf import build_graph
             else:
                 from pipeline.jsonl_to_rdf import build_graph
                 

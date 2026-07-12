@@ -6,6 +6,7 @@ that all parsers (Claude Code, DeepSeek, Grok, Warp) share.
 
 import re
 import hashlib
+from urllib.parse import quote
 
 from rdflib import Graph, Namespace, Literal, URIRef
 from rdflib.namespace import RDF, RDFS, XSD, OWL, SKOS, DCTERMS
@@ -34,6 +35,21 @@ def slug(text: str) -> str:
 def entity_uri(name: str) -> URIRef:
     """Create a deterministic URI for an extracted entity."""
     return DATA[f"entity/{slug(name)}"]
+
+
+def uri_component(text: str) -> str:
+    """Encode arbitrary text so it is safe inside a URI path segment."""
+    return quote(str(text), safe="")
+
+
+def tool_call_uri(tool_id: str) -> URIRef:
+    """Create a safe URI for a tool call ID from external session logs."""
+    return DATA[f"toolcall/{uri_component(tool_id)}"]
+
+
+def tool_result_uri(tool_id: str) -> URIRef:
+    """Create a safe URI for a tool result tied to an external tool call ID."""
+    return DATA[f"toolresult/{uri_component(tool_id)}"]
 
 
 # =============================================================================

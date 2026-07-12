@@ -22,10 +22,10 @@ from rdflib import Literal
 from rdflib.namespace import RDF, RDFS, DCTERMS, XSD
 
 from pipeline.common import (
-    PROV, SIOC, DEVKG, DATA,
+    PROV, SIOC, DEVKG,
     slug, create_graph, create_session_node, create_developer_node,
     create_model_node, create_message_node, create_project_node,
-    add_triples_to_graph,
+    add_triples_to_graph, tool_call_uri, tool_result_uri,
 )
 from pipeline.triple_extraction import extract_triples_gemini, get_cached_triples, cache_triples
 
@@ -169,7 +169,7 @@ def build_graph(jsonl_path: str, skip_extraction: bool = False, model=None, deve
                 tool_call_count += 1
                 tool_id = block.get("id", f"tool-{tool_call_count}")
                 tool_name = block.get("name", "unknown")
-                tool_uri = DATA[f"toolcall/{tool_id}"]
+                tool_uri = tool_call_uri(tool_id)
 
                 g.add((tool_uri, RDF.type, DEVKG.ToolCall))
                 g.add((tool_uri, DEVKG.hasToolName, Literal(tool_name)))
@@ -189,10 +189,10 @@ def build_graph(jsonl_path: str, skip_extraction: bool = False, model=None, deve
             elif block_type == "tool_result":
                 tool_use_id = block.get("tool_use_id")
                 if tool_use_id:
-                    result_uri = DATA[f"toolresult/{tool_use_id}"]
-                    tool_call_uri = DATA[f"toolcall/{tool_use_id}"]
+                    result_uri = tool_result_uri(tool_use_id)
+                    call_uri = tool_call_uri(tool_use_id)
                     g.add((result_uri, RDF.type, DEVKG.ToolResult))
-                    g.add((tool_call_uri, DEVKG.hasToolResult, result_uri))
+                    g.add((call_uri, DEVKG.hasToolResult, result_uri))
 
                     result_content = block.get("content", "")
                     if isinstance(result_content, list):

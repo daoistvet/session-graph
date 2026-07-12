@@ -23,6 +23,7 @@ from pathlib import Path
 
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 PI_SESSIONS_DIR = Path.home() / ".pi" / "agent" / "sessions"
+CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output" / "claude"
 WATERMARK_FILE = OUTPUT_DIR / "watermarks.json"
 
@@ -50,12 +51,18 @@ def find_sessions(
     
     if CLAUDE_PROJECTS_DIR.exists():
         all_files.extend(list(CLAUDE_PROJECTS_DIR.rglob("*.jsonl")))
-    
+
     if PI_SESSIONS_DIR.exists():
         all_files.extend(list(PI_SESSIONS_DIR.rglob("*.jsonl")))
-        
+
+    if CODEX_SESSIONS_DIR.exists():
+        all_files.extend(list(CODEX_SESSIONS_DIR.rglob("*.jsonl")))
+
     if not all_files:
-        print(f"Warning: No sessions found in {CLAUDE_PROJECTS_DIR} or {PI_SESSIONS_DIR}", file=sys.stderr)
+        print(
+            f"Warning: No sessions found in {CLAUDE_PROJECTS_DIR}, {PI_SESSIONS_DIR}, or {CODEX_SESSIONS_DIR}",
+            file=sys.stderr,
+        )
         return []
     if not include_subagents:
         skipped = sum(1 for f in all_files if is_subagent_file(f))
@@ -207,6 +214,8 @@ def main():
         try:
             if ".pi/agent/sessions" in str(session_path):
                 from pipeline.pi_to_rdf import build_graph
+            elif ".codex/sessions" in str(session_path):
+                from pipeline.codex_to_rdf import build_graph
             else:
                 from pipeline.jsonl_to_rdf import build_graph
 
