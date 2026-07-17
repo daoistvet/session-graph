@@ -43,7 +43,6 @@ services:
       - RABBITMQ_URL=amqp://devkg:devkg@rabbitmq:5672/
       - FUSEKI_URL=http://fuseki:3030
       - FUSEKI_DATASET=devkg
-      - CAG_SERVER_URL=http://host.docker.internal:4000
     env_file:
       - .env
     volumes:
