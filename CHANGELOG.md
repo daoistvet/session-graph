@@ -2,6 +2,36 @@
 
 All notable changes to session-graph are documented here.
 
+## [0.10.0] - 2026-07-17
+
+### Removed
+- **CAG (Compounding Agents) extraction — retired.** See [docs/adr/001-cag.md](docs/adr/001-cag.md)
+  for what it was intended to do and why it is closed. CAG captured engineering *reasoning*
+  (decisions, rejected alternatives, failures, next steps) to complement devkg's technical
+  relationships, but its only sink was a server in a separate repo (`compounding_agents`,
+  port 4000). It died on 2026-03-25 and ran dead for ~4 months: every touchpoint failed
+  non-fatally, so the consumer kept spending an LLM call per session on triples that were
+  discarded, then logged `[DONE] ... (N cag triples)` as success. Discovered 2026-07-17.
+- `pipeline/cag_extraction.py`, `pipeline/cag_cache.py` — deleted (recoverable via git).
+- `docker/queue_consumer.py` — `CAG_SERVER_URL`, `post_cag_triples()`, `_run_cag()`, the
+  `session-context` / `pipeline-complete` calls, and `extract_last_assistant_text()`
+  (CAG-only, no other caller).
+- `docker-compose.yml` — `CAG_SERVER_URL` env var.
+- Fuseki — the three empty `cag-test-*` datasets; `pipeline/cache/cag_cache.db`.
+- `~/.claude/skills/cag-sparql/` and its rows in the global `CLAUDE.md` (queried a dataset
+  frozen since March).
+
+### Changed
+- `queue_consumer.py` now calls `_run_devkg()` directly — the `ThreadPoolExecutor` existed
+  only to parallelize devkg against CAG. devkg failure remains fatal for the job.
+- Job completion logs `[DONE] {session} ({n} devkg triples)`.
+
+### Kept
+- Fuseki `/cag` — 18,126 triples, frozen read-only archive. Not reproducible; the server
+  that wrote it is gone.
+- 149 `devkg:hasCorrelationId` triples in the live devkg graph — orphaned but harmless
+  historical provenance, all pre-2026-03-25.
+
 ## [0.9.0] - 2026-07-12
 
 ### Added
