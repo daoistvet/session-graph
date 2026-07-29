@@ -15,13 +15,9 @@ import sys
 import time
 from pathlib import Path
 
-from rdflib import Literal
-from rdflib.namespace import DCTERMS, RDF, XSD
-
 from pipeline.common import (
     DEVKG,
     PROV,
-    SIOC,
     add_triples_to_graph,
     create_developer_node,
     create_graph,
@@ -29,8 +25,6 @@ from pipeline.common import (
     create_model_node,
     create_project_node,
     create_session_node,
-    tool_call_uri,
-    tool_result_uri,
 )
 from pipeline.triple_extraction import cache_triples, extract_triples_gemini, get_cached_triples
 
@@ -51,17 +45,6 @@ def _extract_text_from_content(content) -> str:
                 if text:
                     parts.append(text)
     return "\n".join(parts)
-
-
-def _parse_args_summary(arguments) -> str:
-    if arguments is None:
-        return ""
-    if isinstance(arguments, str):
-        return arguments
-    try:
-        return json.dumps(arguments, ensure_ascii=False)
-    except Exception:
-        return str(arguments)
 
 
 def build_graph(jsonl_path: str, skip_extraction: bool = False, model=None, developer: str = "developer"):
@@ -103,14 +86,7 @@ def build_graph(jsonl_path: str, skip_extraction: bool = False, model=None, deve
                 continue
 
             item_type = payload.get("type")
-            if item_type in {
-                "message",
-                "function_call",
-                "function_call_output",
-                "custom_tool_call",
-                "custom_tool_call_output",
-                "web_search_call",
-            }:
+            if item_type == "message":
                 entries.append({"timestamp": ts, "item": payload})
 
     if not entries:
@@ -137,12 +113,8 @@ def build_graph(jsonl_path: str, skip_extraction: bool = False, model=None, deve
 
     user_count = 0
     assistant_count = 0
-    tool_call_count = 0
     triple_count = 0
     cache_hits = 0
-
-    call_id_to_uri = {}
-    pending_tool_calls = []
     message_index = 0
 
     for i, row in enumerate(entries):
@@ -150,99 +122,55 @@ def build_graph(jsonl_path: str, skip_extraction: bool = False, model=None, deve
         timestamp = row.get("timestamp")
         item_type = item.get("type")
 
-        if item_type == "message":
-            role = item.get("role")
-            if role not in ("user", "assistant"):
-                continue
-
-            msg_id = item.get("id") or f"{session_id}-msg-{message_index}"
-            message_index += 1
-            full_text = _extract_text_from_content(item.get("content"))
-
-            msg_uri = create_message_node(
-                g,
-                msg_id,
-                role,
-                session_uri,
-                creator_uri=developer_uri if role == "user" else None,
-                timestamp=timestamp,
-                content=full_text if full_text.strip() else None,
-                parent_uri=None,
-            )
-
-            if role == "user":
-                user_count += 1
-            else:
-                assistant_count += 1
-                if pending_tool_calls:
-                    for t_uri in pending_tool_calls:
-                        g.add((msg_uri, DEVKG.invokedTool, t_uri))
-                    pending_tool_calls = []
-
-            if not skip_extraction and model is not None and role == "assistant" and full_text.strip():
-                cached = get_cached_triples(msg_id)
-                if cached is not None:
-                    triples = cached
-                    cache_hits += 1
-                else:
-                    triples = extract_triples_gemini(model, full_text)
-                    cache_triples(msg_id, triples, full_text)
-                    time.sleep(0.5)
-
-                add_triples_to_graph(g, msg_uri, triples, session_uri)
-                triple_count += len(triples)
-
-                if triples:
-                    label = "cached" if cached is not None else "extracted"
-                    print(f"  [{i+1}/{len(entries)}] {len(triples)} triples {label}", file=sys.stderr)
-
+        # Skip tool call / tool output items — not knowledge-graph material
+        if item_type != "message":
             continue
 
-        if item_type in ("function_call", "custom_tool_call", "web_search_call"):
-            tool_call_count += 1
-            call_id = item.get("call_id") or item.get("id") or f"{session_id}-tool-{i}"
-            tool_name = item.get("name", item_type)
-            t_uri = tool_call_uri(call_id)
-            call_id_to_uri[call_id] = t_uri
-            pending_tool_calls.append(t_uri)
-
-            g.add((t_uri, RDF.type, DEVKG.ToolCall))
-            g.add((t_uri, DEVKG.hasToolName, Literal(tool_name)))
-            g.add((t_uri, DEVKG.usedInSession, session_uri))
-            if timestamp:
-                g.add((t_uri, DCTERMS.created, Literal(timestamp, datatype=XSD.dateTime)))
-
-            args_summary = _parse_args_summary(item.get("arguments"))
-            if args_summary:
-                if len(args_summary) > 500:
-                    args_summary = args_summary[:500] + "..."
-                g.add((t_uri, DCTERMS.description, Literal(args_summary)))
+        role = item.get("role")
+        if role not in ("user", "assistant"):
             continue
 
-        if item_type in ("function_call_output", "custom_tool_call_output"):
-            call_id = item.get("call_id")
-            if not call_id:
-                continue
+        msg_id = item.get("id") or f"{session_id}-msg-{message_index}"
+        message_index += 1
+        full_text = _extract_text_from_content(item.get("content"))
 
-            call_uri = call_id_to_uri.get(call_id, tool_call_uri(call_id))
-            result_uri = tool_result_uri(call_id)
-            g.add((result_uri, RDF.type, DEVKG.ToolResult))
-            g.add((call_uri, DEVKG.hasToolResult, result_uri))
+        msg_uri = create_message_node(
+            g,
+            msg_id,
+            role,
+            session_uri,
+            creator_uri=developer_uri if role == "user" else None,
+            timestamp=timestamp,
+            content=full_text if full_text.strip() else None,
+            parent_uri=None,
+        )
 
-            output = item.get("output", "")
-            if isinstance(output, (dict, list)):
-                out_text = json.dumps(output, ensure_ascii=False)
+        if role == "user":
+            user_count += 1
+        else:
+            assistant_count += 1
+
+        if not skip_extraction and model is not None and role == "assistant" and full_text.strip():
+            cached = get_cached_triples(msg_id)
+            if cached is not None:
+                triples = cached
+                cache_hits += 1
             else:
-                out_text = str(output)
-            if out_text:
-                if len(out_text) > 500:
-                    out_text = out_text[:500] + "..."
-                g.add((result_uri, SIOC.content, Literal(out_text)))
+                triples = extract_triples_gemini(model, full_text)
+                cache_triples(msg_id, triples, full_text)
+                time.sleep(0.5)
+
+            add_triples_to_graph(g, msg_uri, triples, session_uri)
+            triple_count += len(triples)
+
+            if triples:
+                label = "cached" if cached is not None else "extracted"
+                print(f"  [{i+1}/{len(entries)}] {len(triples)} triples {label}", file=sys.stderr)
 
     cache_msg = f", {cache_hits} cache hits" if cache_hits else ""
     print(
         f"  Processed: {user_count} user messages, {assistant_count} assistant messages, "
-        f"{tool_call_count} tool calls, {triple_count} knowledge triples{cache_msg}",
+        f"{triple_count} knowledge triples{cache_msg}",
         file=sys.stderr,
     )
 

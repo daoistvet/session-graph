@@ -2,6 +2,22 @@
 
 All notable changes to session-graph are documented here.
 
+## [0.11.0] - 2026-07-29
+
+### Added
+- **Cursor session ingestion** (`cursor_to_rdf.py` + `hooks/cursor_hook.sh`) — native Cursor `stop` hook publishes to RabbitMQ; consumer mounts `~/.cursor/projects` and parses agent-transcript JSONL with platform `cursor`.
+- Fixed `translate_path` so `.cursor/projects/...` is no longer misrouted to `/claude-sessions`.
+
+### Changed
+- Docs (README / CLAUDE / CONTRIBUTING) mark Cursor as production JSONL under `agent-transcripts` (not SQLite).
+- `bulk_process.py` scans Cursor agent transcripts and writes TTLs to `output/cursor/`.
+- Parsers no longer emit ToolCall/ToolResult RDF (sidetrack for discovery; prefer KnowledgeTriples + `sioc:content`).
+- **`devkg-sparql` skill** — provenance-first retrieval: Template 5 (topic+intent+session), Session Insight Pack, multi-platform path resolution; 16 local + 6 Wikidata templates.
+
+### Verified
+- End-to-end Cursor flow completed successfully: Cursor hook → RabbitMQ → parser/LLM extraction → Wikidata linking → Fuseki.
+- Validation found 31 Cursor TTL outputs and 31 Cursor sessions with 3,334 knowledge triples in Fuseki.
+
 ## [0.10.0] - 2026-07-17
 
 ### Removed

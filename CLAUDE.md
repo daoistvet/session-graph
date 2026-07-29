@@ -12,7 +12,7 @@ Build a unified developer knowledge graph that connects scattered knowledge from
 - Grok conversation exports (JSON zip)
 - Warp terminal AI sessions (SQLite)
 - ChatGPT conversation exports (JSON)
-- Cursor AI sessions (planned)
+- Cursor AI sessions (`~/.cursor/projects/*/agent-transcripts/*.jsonl`)
 - VS Code Copilot interactions (planned)
 
 The pipeline extracts structured `(subject, predicate, object)` triples from AI assistant messages, links entities to Wikidata via `owl:sameAs`, and loads everything into a SPARQL-queryable triplestore with full provenance.
@@ -72,6 +72,8 @@ Closed-world design: the LLM is instructed to use ONLY these predicates. A norma
 
   Claude Code (.jsonl)  -->  jsonl_to_rdf.py    -->  .ttl
   pi coding agent (.jsonl) --> pi_to_rdf.py     -->  .ttl
+  Codex (.jsonl)        -->  codex_to_rdf.py    -->  .ttl
+  Cursor (.jsonl)       -->  cursor_to_rdf.py   -->  .ttl
   DeepSeek (.json zip)  -->  deepseek_to_rdf.py -->  .ttl
   Grok (.json zip)      -->  grok_to_rdf.py     -->  .ttl
   ChatGPT (.json)       -->  chatgpt_to_rdf.py  -->  .ttl
@@ -139,7 +141,8 @@ Closed-world design: the LLM is instructed to use ONLY these predicates. A norma
 ---------------------------------
 
   bulk_process.py (sequential, per-session)
-  +-- Finds all ~/.claude/projects/**/*.jsonl
+  +-- Finds ~/.claude/projects, ~/.pi/agent/sessions, ~/.codex/sessions,
+  |   ~/.cursor/projects/*/agent-transcripts
   +-- Filters out subagent files (avoids duplicate triples)
   +-- SHA256 watermarks -> skip already-processed sessions
   +-- CLI: --dry-run, --limit N, --skip-linking, --force
@@ -174,6 +177,8 @@ pipeline/
 +-- triple_extraction.py             # LLM prompt, extraction, normalization, stopwords
 +-- jsonl_to_rdf.py                  # Claude Code JSONL -> RDF (assistant-only extraction)
 +-- pi_to_rdf.py                     # pi coding agent JSONL -> RDF
++-- codex_to_rdf.py                  # Codex JSONL -> RDF
++-- cursor_to_rdf.py                 # Cursor agent-transcript JSONL -> RDF
 +-- deepseek_to_rdf.py               # DeepSeek JSON zip -> RDF
 +-- grok_to_rdf.py                   # Grok MongoDB JSON -> RDF
 +-- chatgpt_to_rdf.py                # ChatGPT JSON export -> RDF
@@ -189,7 +194,7 @@ pipeline/
 +-- sample_queries.sparql            # 14 SPARQL query templates
 +-- .entity_cache.db                 # SQLite cache for Wikidata links (auto-created)
 +-- .triple_cache.db                 # SQLite cache for extracted triples by message UUID (auto-created)
-.claude/skills/devkg-sparql/SKILL.md # SPARQL skill (14 local + 6 Wikidata templates)
+.claude/skills/devkg-sparql/SKILL.md # SPARQL skill (16 local + 6 Wikidata templates)
 cognee_eval/                         # Cognee evaluation (rejected -- no RDF output)
 research/                            # Wikidata entity linking research docs
 docker/
@@ -198,7 +203,8 @@ docker/
 +-- codex_publisher.py               # Polls ~/.codex/sessions and publishes jobs to RabbitMQ
 Dockerfile.pipeline                   # Python 3.12 image with pipeline deps + pika
 docker-compose.yml                    # fuseki + rabbitmq + pipeline-runner + codex-publisher
-hooks/stop_hook.sh                    # Post-session hook: curl POST to RabbitMQ HTTP API (~33ms)
+hooks/stop_hook.sh                    # Claude Code Stop hook: curl POST to RabbitMQ (~33ms)
+hooks/cursor_hook.sh                  # Cursor stop hook: same RabbitMQ publish contract
 tests/test_integration.sh             # 16-point end-to-end integration test
 output/                               # Generated .ttl files and batch job manifests
 requirements.txt                      # Python dependencies
@@ -215,21 +221,23 @@ docker compose up -d
 
 # The stop hook (hooks/stop_hook.sh) auto-publishes to RabbitMQ after each Claude Code session.
 # The pi extension (~/.pi/agent/extensions/devkg-hook.ts) auto-publishes after each pi session.
+# hooks/cursor_hook.sh (via ~/.cursor/hooks.json stop) auto-publishes after each Cursor agent turn.
 # codex-publisher polls ~/.codex/sessions and publishes on file changes.
 # pipeline-runner: extract triples → inline Wikidata link → Fuseki
 #   (DEVKG_SKIP_LINKING=1 to skip linking)
 
-# Manual: single session (Claude Code or pi)
+# Manual: single session (Claude Code, pi, or Cursor)
 source .venv/bin/activate
 python -m pipeline.jsonl_to_rdf <claude_session.jsonl> output/result.ttl
 python -m pipeline.pi_to_rdf <pi_session.jsonl> output/result_pi.ttl
+python -m pipeline.cursor_to_rdf <cursor_session.jsonl> output/cursor/result.ttl
 
 # Other platforms
 python -m pipeline.deepseek_to_rdf <zip_path> output/deepseek.ttl --conversation 0
 python -m pipeline.grok_to_rdf <zip_path> output/grok.ttl --conversation 0
 python -m pipeline.warp_to_rdf output/warp.ttl --conversation 0 --min-exchanges 5
 
-# Bulk process all Claude Code and pi sessions
+# Bulk process all Claude Code, pi, Codex, and Cursor sessions
 python -m pipeline.bulk_process
 
 # Bulk via Vertex AI Batch Prediction (50% cheaper)
@@ -275,7 +283,7 @@ bash tests/test_integration.sh
 - **Context-aware entity linking**: `link_entities.py` extracts neighboring KnowledgeTriple relationships from .ttl files and passes them as context to the ReAct agent. Improves disambiguation for ambiguous labels (e.g., "condition" -> disease vs programming conditional).
 - **`FILTER(LANG(?label) = "")`**: Used in all SPARQL queries to avoid duplicate rows from lang-tagged vs untagged literals.
 - **Triple extraction cache**: SQLite cache (`pipeline/cache/triple_cache.db`) keyed by message UUID. The stop hook fires on every Claude Code pause (not just session end), causing the same JSONL to be re-processed repeatedly. The cache ensures each message's LLM extraction only happens once — re-runs rebuild the full RDF graph (cheap) but skip API calls for cached messages. Stores `text_hash` for auditability. Shared between local CLI and Docker container via volume mount.
-- **Realtime Wikidata linking**: `queue_consumer.py` calls `link_entities_into_graph()` after extraction so new Claude/pi/Codex sessions get `owl:sameAs` before Fuseki upload. Cache-first; agentic misses capped per job; `DEVKG_SKIP_LINKING=1` disables. Batch `link_entities.py` keeps `--min-sessions` for corpus catch-up.
+- **Realtime Wikidata linking**: `queue_consumer.py` calls `link_entities_into_graph()` after extraction so new Claude/pi/Codex/Cursor sessions get `owl:sameAs` before Fuseki upload. Cache-first; agentic misses capped per job; `DEVKG_SKIP_LINKING=1` disables. Batch `link_entities.py` keeps `--min-sessions` for corpus catch-up.
 
 ## Known Issues
 

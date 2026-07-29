@@ -1,6 +1,6 @@
 ---
 name: devkg-sparql
-description: Query the Dev Knowledge Graph via SPARQL instead of grepping raw session files. Use this when asked about technologies, relationships between tools, session history, or cross-platform knowledge.
+description: Query the Dev Knowledge Graph via SPARQL instead of grepping raw session files. Use this when asked about technologies, relationships between tools, session history, where a topic was discussed, or cross-platform knowledge. Prefer provenance-first SPARQL (message + session) over label-only CONTAINS or grep.
 user-invocable: true
 allowed-tools:
   - Bash(curl:*)
@@ -9,25 +9,47 @@ allowed-tools:
 
 # DevKG SPARQL Query Skill
 
-Query the developer knowledge graph at `http://localhost:3030/devkg/sparql` via SPARQL. This graph contains extracted knowledge triples, entities, Wikidata links, and session metadata from Claude Code, DeepSeek, Grok, and Warp sessions.
+## CRITICAL CONTEXT-SAFETY RULE
+
+**NEVER READ LARGE SPARQL RESULTS, SESSION FILES, JSONL, LOGS, OR GENERATED ARTIFACTS ALL AT ONCE.** Always add `LIMIT`, select only needed variables, inspect counts first, and summarize. Never dump huge result sets, ID lists, raw JSON, or transcript content into chat.
+
+Query the developer knowledge graph at `http://localhost:3030/devkg/sparql` via SPARQL. This graph contains extracted knowledge triples, entities, Wikidata links, and session metadata from **Claude Code, pi, Codex, Cursor, ChatGPT, DeepSeek, Grok, and Warp** sessions.
+
+**Content limit:** `sioc:content` on messages is capped at ~2000 characters at ingest. SPARQL is enough to **locate sessions and reason lightly** from triples + snippets. For full quotes or deep thread reconstruction, normalize `hasSourceFile` and read the JSONL only when needed.
+
+## Retrieval Strategy (read this first)
+
+| User intent | Do this first | Do NOT start with |
+|-------------|---------------|-------------------|
+| "Where / which sessions discussed X?" | **Template 5** (topic + intent + provenance) | Label-only Template 6, or grep |
+| "What do we know about technology X?" | Template 1 (entity + provenance) | Grep |
+| "How does X relate to Y?" | Template 2 | Grep |
+| "Find the exact message wording" | Template 5 or 9 → then JSONL only if snippet truncated | Grepping all projects |
+
+**Default for session-discovery questions:** multi-signal filter (topic **and** intent terms) on **both** triple labels and `sioc:content`, always joining `extractedFrom` / `extractedInSession`, ordered by `DESC(?created)`, with `LIMIT`.
+
+When Fuseki returns provenance hits, **do not** fall back to grep. Grep only if Fuseki is down or returns 0 rows after a provenance query.
 
 ## Execution Pattern
 
-Always use this one-liner pattern (POST, URL-encoded query, JSON output):
+Always use this pattern (POST, URL-encoded query, JSON output). Include Fuseki auth when required:
 
 ```bash
 curl -s -X POST 'http://localhost:3030/devkg/sparql' \
+  -u admin:admin \
   -H 'Accept: application/sparql-results+json' \
-  --data-urlencode 'query=YOUR_SPARQL_HERE' \
+  -H 'Content-Type: application/x-www-form-urlencoded' \
+  --data-urlencode "query=YOUR_SPARQL_HERE" \
   | jq -r '.results.bindings[] | [.var1.value, .var2.value] | @tsv'
 ```
 
-Adjust the `jq` expression to match your SELECT variables. Use `@tsv` for compact tabular output.
+Adjust the `jq` expression to match your SELECT variables. Use `@tsv` for compact tabular output. Always `LIMIT` results.
 
-For multi-line queries (recommended for readability), use double quotes around the `--data-urlencode` value and escape inner quotes:
+For multi-line queries, use double quotes around the `--data-urlencode` value and escape inner quotes:
 
 ```bash
 curl -s -X POST 'http://localhost:3030/devkg/sparql' \
+  -u admin:admin \
   -H 'Accept: application/sparql-results+json' \
   -H 'Content-Type: application/x-www-form-urlencoded' \
   --data-urlencode "query=PREFIX devkg: <http://devkg.local/ontology#>
@@ -39,15 +61,47 @@ SELECT DISTINCT ?label WHERE {
   | jq -r '.results.bindings[] | .label.value'
 ```
 
-This avoids shell escaping issues with `!=`, `""`, and other SPARQL operators inside single-quoted strings.
-
 ## Fallback Rule
 
-If Fuseki is unreachable (curl fails or times out) or returns 0 results, fall back to grep-based session search:
+If Fuseki is unreachable (curl fails or times out) **or** a provenance query (Template 5/8) returns 0 results, then fall back to grep-based session search:
 ```bash
-grep -rli "keyword" ~/.claude/projects/**/
+grep -rli "keyword" ~/.claude/projects ~/.pi/agent/sessions ~/.cursor/projects 2>/dev/null | head -20
 ```
-Then read matching JSONL files with Python. Only use this as a last resort — SPARQL is faster and can answer relationship questions that grep cannot.
+Then read matching JSONL files with bounded Python extraction. Only use this as a last resort.
+
+## Resolving `hasSourceFile` to Disk (and Pruned Sources)
+
+`hasSourceFile` is NOT always a real absolute path. Normalize before any `Read`:
+
+| `hasSourceFile` prefix | Real on-disk location |
+|---|---|
+| `/Users/...` | absolute path — use as-is |
+| `/claude-sessions/<munged>/<file>` | `~/.claude/projects/<munged>/<file>` |
+| `/pi-sessions/<munged>/<file>` | `~/.pi/agent/sessions/<munged>/<file>` |
+| `/codex-sessions/<path>` | `~/.codex/sessions/<path>` |
+| `/cursor-sessions/projects/<slug>/...` | `~/.cursor/projects/<slug>/...` |
+
+```bash
+resolve_session_path() {
+  local sf="$1" p=""
+  case "$sf" in
+    /Users/*)                    p="$sf" ;;
+    /claude-sessions/*)          p="$HOME/.claude/projects/${sf#/claude-sessions/}" ;;
+    /pi-sessions/*)              p="$HOME/.pi/agent/sessions/${sf#/pi-sessions/}" ;;
+    /codex-sessions/*)           p="$HOME/.codex/sessions/${sf#/codex-sessions/}" ;;
+    /cursor-sessions/projects/*) p="$HOME/.cursor/projects/${sf#/cursor-sessions/projects/}" ;;
+    *)                           p="$sf" ;;
+  esac
+  local stem="${p%.jsonl}"
+  if [ -f "$p" ];              then echo "FILE:$p";                    return; fi
+  if [ -f "$stem" ];           then echo "FILE:$stem";                 return; fi
+  if [ -d "$stem/subagents" ]; then echo "SUBAGENTS:$stem/subagents";  return; fi
+  if [ -d "$p/subagents" ];    then echo "SUBAGENTS:$p/subagents";     return; fi
+  echo "PRUNED:$p"
+}
+```
+
+**If the path is `PRUNED`**, do NOT grep the filesystem. Re-query KnowledgeTriples for that session via `extractedInSession` and reconstruct from labels + any remaining `sioc:content`.
 
 ## Result Formatting
 
@@ -78,8 +132,8 @@ PREFIX wd:      <http://www.wikidata.org/entity/>
 | `devkg:Message` | `sioc:Post`, `prov:Entity` | A message in a session |
 | `devkg:UserMessage` | `devkg:Message` | Human message |
 | `devkg:AssistantMessage` | `devkg:Message` | AI message |
-| `devkg:ToolCall` | `prov:Activity` | Tool invocation (Bash, Read, etc.) |
-| `devkg:ToolResult` | `prov:Entity` | Output from a tool call |
+| `devkg:ToolCall` | `prov:Activity` | Legacy tool invocation nodes (may be absent in new ingests — do not rely on them) |
+| `devkg:ToolResult` | `prov:Entity` | Legacy tool output (may be absent in new ingests) |
 | `devkg:CodeArtifact` | `prov:Entity`, `schema:SoftwareSourceCode` | Code file/snippet |
 | `devkg:Entity` | `prov:Entity` | Extracted technical concept |
 | `devkg:KnowledgeTriple` | — | Reified triple (subject→predicate→object) with provenance |
@@ -109,12 +163,12 @@ PREFIX wd:      <http://www.wikidata.org/entity/>
 
 | Property | On | Value |
 |----------|----|-------|
-| `sioc:content` | Message | Full text content |
+| `sioc:content` | Message | Message text (truncated ~2000 chars at ingest) |
 | `rdfs:label` | Entity/Session/Project | Display name |
 | `dcterms:created` | Session/Message | ISO datetime |
-| `devkg:hasSourcePlatform` | Session | `claude-code`, `deepseek`, `grok`, `warp` |
-| `devkg:hasSourceFile` | Session | Filesystem path to raw source |
-| `devkg:hasToolName` | ToolCall | `Bash`, `Read`, `Write`, `Grep`, etc. |
+| `devkg:hasSourcePlatform` | Session | `claude-code`, `pi-coding-agent`, `codex`, `cursor`, `chatgpt`, `deepseek`, `grok`, `warp` |
+| `devkg:hasSourceFile` | Session | Logical path to raw source — normalize before `Read` (see "Resolving `hasSourceFile` to Disk") |
+| `devkg:hasToolName` | ToolCall | Legacy — prefer KnowledgeTriples + message content for discovery |
 | `devkg:hasWorkingDirectory` | Session | Project directory path |
 | `owl:sameAs` | Entity | Wikidata URI (e.g., `wd:Q28865`) |
 
@@ -165,7 +219,7 @@ ORDER BY ?direction ?predicate
 
 Replace `ENTITY_LOWER` with the lowercase entity name (e.g., `neo4j`, `opentelemetry`).
 
-The `sourceFile` column gives the full path to the original JSONL/JSON file — use `Read` to access it if deeper context is needed.
+The `sourceFile` column is a logical path to the original JSONL/JSON file — normalize it with `resolve_session_path` (see "Resolving `hasSourceFile` to Disk") before `Read`; if it resolves to `PRUNED`, reconstruct from the triples instead.
 
 ### 2. Entity-to-Entity — "How does X relate to Y?"
 
@@ -212,10 +266,81 @@ SELECT ?session ?platform ?created ?title WHERE {
   OPTIONAL { ?session dcterms:created ?created }
   OPTIONAL { ?session dcterms:title ?title }
 }
-ORDER BY ?created
+ORDER BY DESC(?created)
+LIMIT 50
 ```
 
-### 5. Topic Search — "What sessions discussed X?"
+### 5. Topic + Intent → Sessions (PRIMARY for "where did we discuss X?")
+
+**Use this first** for session discovery, career/product/person questions, or "exact piece of a session."
+Do **not** start with label-only Template 6.
+
+Replace `TOPIC_LOWER` (required) and add intent terms in the second FILTER (at least one).
+Example: topic=`linkedin`, intent=`profile|career|roberto|headline|authority`.
+
+```sparql
+SELECT DISTINCT ?created ?platform ?sourceFile ?subj ?pred ?obj
+       (SUBSTR(REPLACE(STR(?content), "\n", " "), 1, 200) AS ?snippet)
+WHERE {
+  {
+    # Path A: KnowledgeTriple labels match topic + intent
+    ?kt a devkg:KnowledgeTriple ;
+        devkg:tripleSubject ?s ;
+        devkg:tripleObject ?o ;
+        devkg:triplePredicateLabel ?pred ;
+        devkg:extractedFrom ?msg ;
+        devkg:extractedInSession ?sess .
+    ?s rdfs:label ?subj .
+    ?o rdfs:label ?obj .
+    FILTER(LANG(?subj) = "" && LANG(?obj) = "")
+    BIND(LCASE(CONCAT(STR(?subj), " ", STR(?obj))) AS ?tripleText)
+    FILTER(CONTAINS(?tripleText, "TOPIC_LOWER"))
+    FILTER(
+      CONTAINS(?tripleText, "INTENT1")
+      || CONTAINS(?tripleText, "INTENT2")
+      || CONTAINS(?tripleText, "INTENT3")
+    )
+  }
+  UNION
+  {
+    # Path B: message text matches topic + intent (catches misses in entity extraction)
+    ?msg a ?msgType ;
+         sioc:content ?content ;
+         sioc:has_container ?sess .
+    FILTER(?msgType IN (devkg:AssistantMessage, devkg:UserMessage))
+    ?kt a devkg:KnowledgeTriple ;
+        devkg:extractedFrom ?msg ;
+        devkg:extractedInSession ?sess ;
+        devkg:tripleSubject ?s ;
+        devkg:tripleObject ?o ;
+        devkg:triplePredicateLabel ?pred .
+    ?s rdfs:label ?subj .
+    ?o rdfs:label ?obj .
+    FILTER(LANG(?subj) = "" && LANG(?obj) = "")
+    BIND(LCASE(STR(?content)) AS ?msgText)
+    FILTER(CONTAINS(?msgText, "TOPIC_LOWER"))
+    FILTER(
+      CONTAINS(?msgText, "INTENT1")
+      || CONTAINS(?msgText, "INTENT2")
+      || CONTAINS(?msgText, "INTENT3")
+    )
+  }
+  OPTIONAL { ?msg sioc:content ?content }
+  OPTIONAL { ?sess devkg:hasSourcePlatform ?platform }
+  OPTIONAL { ?sess devkg:hasSourceFile ?sourceFile }
+  OPTIONAL { ?sess dcterms:created ?created }
+}
+ORDER BY DESC(?created)
+LIMIT 40
+```
+
+Present as a **session table** grouped by `sourceFile` (date, platform, hit count, 1–2 sample facts/snippets). Reason from triples + snippets when possible; open JSONL only if the user needs full wording beyond the 2000-char cap.
+
+If intent is unknown, keep topic FILTER and drop the intent FILTER (broader recall).
+
+### 6. Topic Search (label-only) — fallback entity scan
+
+Simpler label scan. Prefer Template 5 when the user asks *where* or *which sessions*.
 
 ```sparql
 SELECT DISTINCT ?session ?platform ?created ?sourceFile WHERE {
@@ -229,12 +354,11 @@ SELECT DISTINCT ?session ?platform ?created ?sourceFile WHERE {
   OPTIONAL { ?session dcterms:created ?created }
   OPTIONAL { ?session devkg:hasSourceFile ?sourceFile }
 }
-ORDER BY ?created
+ORDER BY DESC(?created)
+LIMIT 30
 ```
 
-The `sourceFile` gives the path to the original session file for deeper reading.
-
-### 6. Cross-Platform Overlap — "What entities appear across platforms?"
+### 7. Cross-Platform Overlap — "What entities appear across platforms?"
 
 ```sparql
 SELECT ?label (GROUP_CONCAT(DISTINCT ?platform; separator=", ") AS ?platforms)
@@ -244,13 +368,15 @@ SELECT ?label (GROUP_CONCAT(DISTINCT ?platform; separator=", ") AS ?platforms)
           devkg:extractedInSession ?session .
   ?session devkg:hasSourcePlatform ?platform .
   ?e rdfs:label ?label .
+  FILTER(LANG(?label) = "")
 }
 GROUP BY ?label
 HAVING(COUNT(DISTINCT ?platform) > 1)
 ORDER BY DESC(?platformCount)
+LIMIT 40
 ```
 
-### 7. Wikidata Enrichment — "What is X?"
+### 8. Wikidata Enrichment — "What is X?"
 
 ```sparql
 SELECT ?label ?wikidataURI ?description WHERE {
@@ -259,25 +385,72 @@ SELECT ?label ?wikidataURI ?description WHERE {
           owl:sameAs ?wikidataURI .
   FILTER(STRSTARTS(STR(?wikidataURI), "http://www.wikidata.org"))
   FILTER(CONTAINS(LCASE(STR(?label)), "ENTITY_LOWER"))
+  FILTER(LANG(?label) = "")
   OPTIONAL { ?entity dcterms:description ?description }
 }
-```
-
-### 8. Full-Text Content Search — "Find messages mentioning keyword X"
-
-```sparql
-SELECT ?session ?created (SUBSTR(?content, 1, 200) AS ?snippet) WHERE {
-  ?msg a devkg:UserMessage ;
-       sioc:content ?content ;
-       devkg:usedInSession ?session .
-  OPTIONAL { ?msg dcterms:created ?created }
-  FILTER(CONTAINS(LCASE(?content), "KEYWORD_LOWER"))
-}
-ORDER BY ?created
 LIMIT 20
 ```
 
-### 9. 2-Hop Neighborhood — "What connects to X and what connects to those?"
+### 9. Full-Text Content Search — "Find messages mentioning keyword X"
+
+Searches **both** user and assistant messages (assistant text holds most extractable knowledge).
+
+```sparql
+SELECT ?platform ?created ?sourceFile
+       (SUBSTR(REPLACE(STR(?content), "\n", " "), 1, 200) AS ?snippet)
+WHERE {
+  ?msg a ?msgType ;
+       sioc:content ?content ;
+       sioc:has_container ?session .
+  FILTER(?msgType IN (devkg:AssistantMessage, devkg:UserMessage))
+  OPTIONAL { ?session dcterms:created ?created }
+  OPTIONAL { ?session devkg:hasSourcePlatform ?platform }
+  OPTIONAL { ?session devkg:hasSourceFile ?sourceFile }
+  FILTER(CONTAINS(LCASE(?content), "KEYWORD_LOWER"))
+}
+ORDER BY DESC(?created)
+LIMIT 20
+```
+
+### 10. Session Insight Pack — "Summarize what session S knew"
+
+Given a session URI or `sourceFile`, return predicate mix + sample provenance facts (no JSONL required for a light summary).
+
+```sparql
+SELECT ?pred (COUNT(?kt) AS ?n) WHERE {
+  ?sess devkg:hasSourceFile ?sourceFile .
+  FILTER(CONTAINS(STR(?sourceFile), "SESSION_PATH_FRAGMENT"))
+  ?kt a devkg:KnowledgeTriple ;
+      devkg:extractedInSession ?sess ;
+      devkg:triplePredicateLabel ?pred .
+}
+GROUP BY ?pred
+ORDER BY DESC(?n)
+LIMIT 24
+```
+
+Follow with sample facts:
+
+```sparql
+SELECT ?subj ?pred ?obj
+       (SUBSTR(REPLACE(STR(?content), "\n", " "), 1, 160) AS ?snippet)
+WHERE {
+  ?sess devkg:hasSourceFile ?sourceFile .
+  FILTER(CONTAINS(STR(?sourceFile), "SESSION_PATH_FRAGMENT"))
+  ?kt a devkg:KnowledgeTriple ;
+      devkg:extractedInSession ?sess ;
+      devkg:tripleSubject ?s ;
+      devkg:tripleObject ?o ;
+      devkg:triplePredicateLabel ?pred ;
+      devkg:extractedFrom ?msg .
+  ?s rdfs:label ?subj . ?o rdfs:label ?obj .
+  FILTER(LANG(?subj) = "" && LANG(?obj) = "")
+  OPTIONAL { ?msg sioc:content ?content }
+}
+LIMIT 15
+```
+
+### 11. 2-Hop Neighborhood — "What connects to X and what connects to those?"
 
 Traverses outbound edges from X, then follows outbound edges from each neighbor. Shows the subgraph reachable in 2 hops.
 
@@ -301,13 +474,12 @@ SELECT DISTINCT ?aLabel ?p1 ?bLabel ?p2 ?cLabel WHERE {
   }
 }
 ORDER BY ?bLabel ?cLabel
+LIMIT 40
 ```
 
 For bidirectional 2-hop (also follows inbound edges), add a second UNION branch that reverses subject/object in each hop.
 
-### 10. Hub Detection — "What are the most connected entities?"
-
-Finds entities with the highest total degree (sum of inbound + outbound edges). These are the core concepts in the knowledge graph.
+### 12. Hub Detection — "What are the most connected entities?"
 
 ```sparql
 SELECT ?label (COUNT(DISTINCT ?triple) AS ?degree) WHERE {
@@ -328,9 +500,7 @@ ORDER BY DESC(?degree)
 LIMIT 20
 ```
 
-### 11. Cross-Session Entity Overlap — "What sessions share knowledge?"
-
-Finds pairs of sessions that discuss the same entities, with the shared entity list. Reveals hidden connections between sessions.
+### 13. Cross-Session Entity Overlap — "What sessions share knowledge?"
 
 ```sparql
 SELECT ?s1File ?s2File
@@ -356,9 +526,7 @@ ORDER BY DESC(?shared)
 LIMIT 10
 ```
 
-### 12. Path Discovery — "How does X connect to Y?" (via intermediate entities)
-
-Finds 2-hop paths between two entities in either direction. If no result, the entities are more than 2 hops apart or unconnected.
+### 14. Path Discovery — "How does X connect to Y?" (via intermediate entities)
 
 ```sparql
 SELECT DISTINCT ?p1 ?midLabel ?p2 WHERE {
@@ -398,13 +566,12 @@ SELECT DISTINCT ?p1 ?midLabel ?p2 WHERE {
   FILTER(CONTAINS(LCASE(?bLabel), "ENTITY_Y"))
   FILTER(?a != ?b && ?a != ?mid && ?mid != ?b)
 }
+LIMIT 20
 ```
 
 Present as: `ENTITY_X --p1--> intermediate --p2--> ENTITY_Y`
 
-### 13. Project Knowledge Map — "What does project X know about?"
-
-Lists the most connected entities within a specific project's sessions.
+### 15. Project Knowledge Map — "What does project X know about?"
 
 ```sparql
 SELECT ?label (COUNT(DISTINCT ?triple) AS ?mentions) WHERE {
@@ -423,9 +590,7 @@ ORDER BY DESC(?mentions)
 LIMIT 30
 ```
 
-### 14. Sibling Entities — "What else uses/requires/enables the same thing as X?"
-
-Finds entities that share a common neighbor with X via the same predicate. Reveals peers and alternatives.
+### 16. Sibling Entities — "What else uses/requires/enables the same thing as X?"
 
 ```sparql
 SELECT DISTINCT ?siblingLabel ?predicate ?sharedLabel WHERE {
@@ -445,9 +610,8 @@ SELECT DISTINCT ?siblingLabel ?predicate ?sharedLabel WHERE {
   FILTER(?x != ?sibling)
 }
 ORDER BY ?predicate ?sharedLabel
+LIMIT 40
 ```
-
-Example: "What else uses the same things as fosfomycin?" → finds nitrofurantoin (both `--uses--> empiric antibiotic therapy`).
 
 ## Wikidata Graph Traversal
 
@@ -470,7 +634,7 @@ curl -s -X POST 'https://query.wikidata.org/sparql' \
 ### Workflow: Local → Wikidata → Back to Local
 
 1. **Start local:** Use Template 1 to find what you know about entity X
-2. **Get QID:** Use Template 7 to retrieve the `owl:sameAs` Wikidata URI
+2. **Get QID:** Use Template 8 to retrieve the `owl:sameAs` Wikidata URI
 3. **Cross to Wikidata:** Use the QID in Wikidata templates below to discover new knowledge
 4. **Come back:** Use what you learned to ask better local queries (e.g., discovered a peer → check if it exists locally)
 
@@ -600,12 +764,18 @@ SELECT ?item ?itemLabel ?classLabel WHERE {
 
 ## Tips
 
+- **Session discovery ("where / which sessions"): always start with Template 5** (topic + intent + provenance). Do not start with label-only Template 6 or grep.
 - Always use `DISTINCT` — duplicate triples exist from lang-tagged vs untagged literals.
 - Always use `FILTER(LANG(?label) = "")` to avoid duplicate rows from lang-tagged literals.
 - Entity labels are lowercase in the graph. Always use `LCASE()` in FILTER for safety.
+- Multi-signal filters beat single keywords: topic (`linkedin`) **and** intent (`profile`, `career`, `roberto`).
 - For "What integrates with X?" questions, use Template 1 (bidirectional) — the relationship may be stored in either direction.
-- `KnowledgeTriple` nodes carry provenance: `extractedFrom` → source message, `extractedInSession` → session. Always join these when the user needs context about where knowledge came from.
-- Combine templates: e.g., Template 1 + Template 7 to get both relationships and Wikidata descriptions.
-- **Start with Template 10 (hubs)** when exploring an unfamiliar graph — it reveals the most connected entities to anchor further queries.
-- **Use Template 12 (path discovery)** before concluding two concepts are unrelated — they may connect through intermediates.
-- **Use Template 14 (siblings)** to discover alternatives and peers — e.g., "what else is an alternative to X?" or "what else requires the same dependencies?"
+- `KnowledgeTriple` nodes carry provenance: `extractedFrom` → source message, `extractedInSession` → session. Always project these when the user needs *where*.
+- `sioc:content` is capped at ~2000 chars — enough to locate and lightly reason; open JSONL only for full fidelity.
+- When following `hasSourceFile`, **normalize the path first**. If `PRUNED`, reconstruct from triples — do not grep.
+- If Fuseki returned provenance hits, **do not** fall back to grep.
+- Combine templates: e.g., Template 5 → Template 10 (session insight) → Template 8 (Wikidata) as needed.
+- **Start with Template 12 (hubs)** when exploring an unfamiliar graph.
+- **Use Template 14 (path discovery)** before concluding two concepts are unrelated.
+- **Use Template 16 (siblings)** to discover alternatives and peers.
+- Prefer relationship predicates (`uses`, `dependsOn`, `solves`, …) over treating the graph as a tag cloud of labels.

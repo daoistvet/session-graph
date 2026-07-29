@@ -28,3 +28,4 @@ cognee_eval/
 research/
 daemon/
 hooks/*.log
+logs/*.log

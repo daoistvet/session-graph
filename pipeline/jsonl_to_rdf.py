@@ -18,14 +18,11 @@ import time
 import argparse
 from pathlib import Path
 
-from rdflib import Literal
-from rdflib.namespace import RDF, RDFS, DCTERMS, XSD
-
 from pipeline.common import (
-    PROV, SIOC, DEVKG,
-    slug, create_graph, create_session_node, create_developer_node,
+    PROV, DEVKG,
+    create_graph, create_session_node, create_developer_node,
     create_model_node, create_message_node, create_project_node,
-    add_triples_to_graph, tool_call_uri, tool_result_uri,
+    add_triples_to_graph,
 )
 from pipeline.triple_extraction import extract_triples_gemini, get_cached_triples, cache_triples
 
@@ -105,7 +102,6 @@ def build_graph(jsonl_path: str, skip_extraction: bool = False, model=None, deve
     # Process entries
     user_count = 0
     assistant_count = 0
-    tool_call_count = 0
     triple_count = 0
     cache_hits = 0
 
@@ -121,9 +117,8 @@ def build_graph(jsonl_path: str, skip_extraction: bool = False, model=None, deve
         # Determine parent URI
         parent_uri = uuid_to_uri.get(parent_uuid) if parent_uuid else None
 
-        # Extract text content and tool calls
+        # Extract text content only (tool_use / tool_result ignored — not knowledge graph material)
         text_parts = []
-        tool_calls_data = []
 
         if isinstance(content, str):
             text_parts.append(content)
@@ -132,10 +127,6 @@ def build_graph(jsonl_path: str, skip_extraction: bool = False, model=None, deve
                 block_type = block.get("type")
                 if block_type == "text":
                     text_parts.append(block.get("text", ""))
-                elif block_type == "tool_use" and entry_type == "assistant":
-                    tool_calls_data.append(block)
-                elif block_type == "tool_result":
-                    tool_calls_data.append(block)
                 elif block_type == "thinking":
                     pass
 
@@ -161,52 +152,6 @@ def build_graph(jsonl_path: str, skip_extraction: bool = False, model=None, deve
                 model_uri = create_model_node(g, model_id)
                 g.add((session_uri, PROV.wasAssociatedWith, model_uri))
 
-        # Process tool calls and results
-        for block in tool_calls_data:
-            block_type = block.get("type")
-
-            if block_type == "tool_use":
-                tool_call_count += 1
-                tool_id = block.get("id", f"tool-{tool_call_count}")
-                tool_name = block.get("name", "unknown")
-                tool_uri = tool_call_uri(tool_id)
-
-                g.add((tool_uri, RDF.type, DEVKG.ToolCall))
-                g.add((tool_uri, DEVKG.hasToolName, Literal(tool_name)))
-                g.add((tool_uri, DEVKG.usedInSession, session_uri))
-                g.add((msg_uri, DEVKG.invokedTool, tool_uri))
-
-                if timestamp:
-                    g.add((tool_uri, DCTERMS.created, Literal(timestamp, datatype=XSD.dateTime)))
-
-                tool_input = block.get("input", {})
-                if isinstance(tool_input, dict):
-                    input_summary = json.dumps(tool_input, ensure_ascii=False)
-                    if len(input_summary) > 500:
-                        input_summary = input_summary[:500] + "..."
-                    g.add((tool_uri, DCTERMS.description, Literal(input_summary)))
-
-            elif block_type == "tool_result":
-                tool_use_id = block.get("tool_use_id")
-                if tool_use_id:
-                    result_uri = tool_result_uri(tool_use_id)
-                    call_uri = tool_call_uri(tool_use_id)
-                    g.add((result_uri, RDF.type, DEVKG.ToolResult))
-                    g.add((call_uri, DEVKG.hasToolResult, result_uri))
-
-                    result_content = block.get("content", "")
-                    if isinstance(result_content, list):
-                        result_text = " ".join(
-                            b.get("text", "") for b in result_content if b.get("type") == "text"
-                        )
-                    else:
-                        result_text = str(result_content)
-
-                    if result_text:
-                        if len(result_text) > 500:
-                            result_text = result_text[:500] + "..."
-                        g.add((result_uri, SIOC.content, Literal(result_text)))
-
         # Gemini triple extraction (assistant messages only — that's where the knowledge is)
         if not skip_extraction and model is not None and full_text.strip() and entry_type == "assistant":
             cached = get_cached_triples(uuid)
@@ -227,7 +172,7 @@ def build_graph(jsonl_path: str, skip_extraction: bool = False, model=None, deve
 
     cache_msg = f", {cache_hits} cache hits" if cache_hits else ""
     print(f"  Processed: {user_count} user messages, {assistant_count} assistant messages, "
-          f"{tool_call_count} tool calls, {triple_count} knowledge triples{cache_msg}", file=sys.stderr)
+          f"{triple_count} knowledge triples{cache_msg}", file=sys.stderr)
 
     return g
 

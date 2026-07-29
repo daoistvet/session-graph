@@ -74,10 +74,10 @@ DeepSeek (.json zip)  --+     triple_extraction.py
 Grok (.json zip)      --+--->  (LLM extracts s,p,o   ---> Apache Jena Fuseki
 Warp (SQLite)         --+      from each assistant         (SPARQL endpoint)
 ChatGPT (.json)       --+      message using 24                 |
-Cursor (planned)      --+      curated predicates)              |
+Cursor (.jsonl)       --+      curated predicates)              |
                                      |                          v
                                      v                    SPARQL Queries
-                            link_entities.py           (14 local templates
+                            link_entities.py           (16 local templates
                              (LangGraph ReAct           + 6 Wikidata templates)
                               agent links to                    |
                               Wikidata QIDs)                    v
@@ -88,6 +88,7 @@ Real-time Loops:
   Claude Code session pause/end → stop_hook.sh → RabbitMQ → pipeline-runner → Fuseki
   pi session end/shutdown        → pi devkg-hook  → RabbitMQ → pipeline-runner → Fuseki
   Codex session file changes     → codex-publisher → RabbitMQ → pipeline-runner → Fuseki
+  Cursor agent turn end (`stop`) → cursor_hook.sh → RabbitMQ → pipeline-runner → Fuseki
                                               (extract + Wikidata link + upload;
                                                triple/entity caches: 0 API calls for seen data)
 ```
@@ -136,7 +137,7 @@ Real-time Loops:
 | Warp | `warp_to_rdf.py` | SQLite | Production |
 | ChatGPT | `chatgpt_to_rdf.py` | JSON export | Production |
 | Codex | `codex_to_rdf.py` | JSONL (`~/.codex/sessions`) | Production |
-| Cursor | -- | SQLite / Markdown | Planned |
+| Cursor | `cursor_to_rdf.py` | JSONL (`~/.cursor/projects/*/agent-transcripts`) | Production |
 | VS Code Copilot | -- | JSON | Planned |
 
 All parsers produce the same RDF schema. Entities merge by label across platforms.
@@ -201,8 +202,11 @@ pi session ends
 Codex writes/updates a session file
   → codex-publisher container detects change and publishes to RabbitMQ
 
+Cursor agent turn ends (local IDE `stop` hook)
+  → cursor_hook.sh publishes to RabbitMQ (~33ms, non-blocking)
+
 Then pipeline-runner consumes jobs:
-  → Extracts triples (message UUID cache)
+  → Extracts triples (message UUID / line-id cache)
   → Links entities to Wikidata inline (entity cache first; agentic ReAct on misses, capped per job)
   → Writes .ttl and uploads to Fuseki
   → Failed jobs go to dead-letter queue for inspection
@@ -210,7 +214,7 @@ Then pipeline-runner consumes jobs:
 
 Set `DEVKG_SKIP_LINKING=1` on `pipeline-runner` to disable inline Wikidata linking (extract + Fuseki only). Batch `link_entities.py` remains available for catch-up / `--min-sessions` corpus passes.
 
-Configure the hook in `~/.claude/settings.json`:
+Configure the Claude Code hook in `~/.claude/settings.json`:
 
 ```json
 {
@@ -219,6 +223,24 @@ Configure the hook in `~/.claude/settings.json`:
   }
 }
 ```
+
+Configure the Cursor hook in `~/.cursor/hooks.json`:
+
+```json
+{
+  "version": 1,
+  "hooks": {
+    "stop": [
+      {
+        "command": "/path/to/hooks/cursor_hook.sh",
+        "timeout": 10
+      }
+    ]
+  }
+}
+```
+
+Note: Cursor chats may also be queued accidentally via the Claude Code `Stop` hook when both run in the same environment. Prefer the native `cursor_hook.sh` path; the consumer routes `.cursor/projects` transcripts to `cursor_to_rdf.py` either way.
 
 ### Bulk Processing (Backfill Your History)
 
@@ -288,7 +310,7 @@ You:   /devkg-sparql What do I know about Kubernetes?
 Claude: [runs entity lookup, finds 12 relationships + Wikidata link to Q22661306]
 ```
 
-The skill includes 14 local query templates (entity lookup, path discovery, hub detection, cross-session overlap, etc.) and 6 Wikidata traversal templates for enriching local entities with external knowledge. It falls back to grep-based session search if Fuseki is unreachable.
+The skill includes 16 local query templates (provenance-first topic+intent search, entity lookup, path discovery, hub detection, cross-session overlap, session insight packs, etc.) and 6 Wikidata traversal templates for enriching local entities with external knowledge. Prefer SPARQL over grep when Fuseki is up.
 
 To use it from other projects, add the skill path to your Claude Code settings or symlink `.claude/skills/devkg-sparql/` into your project.
 
@@ -461,7 +483,7 @@ SELECT ?label ?wikidataURI WHERE {
 }
 ```
 
-The full SPARQL skill includes 14 local query templates and 6 Wikidata traversal templates. See [`pipeline/sample_queries.sparql`](pipeline/sample_queries.sparql) for the complete reference.
+The full SPARQL skill includes 16 local query templates and 6 Wikidata traversal templates. See [`pipeline/sample_queries.sparql`](pipeline/sample_queries.sparql) for the complete reference.
 
 ## Ontology
 
@@ -521,6 +543,9 @@ session-graph/
 |   +-- llm_providers.py                   # LLM provider abstraction (Gemini, OpenAI, Anthropic, Ollama)
 |   +-- triple_extraction.py              # LLM prompt, extraction, normalization
 |   +-- jsonl_to_rdf.py                   # Claude Code JSONL --> RDF
+|   +-- pi_to_rdf.py                      # pi coding agent JSONL --> RDF
+|   +-- codex_to_rdf.py                   # Codex JSONL --> RDF
+|   +-- cursor_to_rdf.py                  # Cursor agent-transcript JSONL --> RDF
 |   +-- deepseek_to_rdf.py                # DeepSeek JSON --> RDF
 |   +-- grok_to_rdf.py                    # Grok JSON --> RDF
 |   +-- chatgpt_to_rdf.py                 # ChatGPT JSON --> RDF
@@ -538,7 +563,8 @@ session-graph/
 +-- docker/
 |   +-- queue_consumer.py                 # RabbitMQ consumer: extract + Wikidata link + Fuseki
 |   +-- codex_publisher.py                # Polls Codex sessions and publishes to RabbitMQ
-+-- hooks/stop_hook.sh                    # Post-session hook: publishes to RabbitMQ (~33ms)
++-- hooks/stop_hook.sh                    # Claude Code post-session hook → RabbitMQ
++-- hooks/cursor_hook.sh                  # Cursor stop hook → RabbitMQ
 +-- Dockerfile.pipeline                   # Python 3.12 image with pipeline deps
 +-- docker-compose.yml                    # fuseki + rabbitmq + pipeline-runner + codex-publisher
 +-- .claude/skills/devkg-sparql/          # SPARQL skill for Claude Code
@@ -586,7 +612,7 @@ The entire pipeline runs for less than $2 on a typical developer's full session 
 - **Context-aware entity linking**: Neighboring KnowledgeTriple relationships are passed as disambiguation context to the ReAct agent. "condition" resolves to disease (not programming conditional) when surrounded by medical triples.
 - **Agentic linker over heuristic**: LangGraph ReAct agent (Gemini 3 Flash Preview via Vertex AI + Wikidata API tool) achieves 7/7 precision vs ~50% for keyword heuristic. Resolves abbreviations like k8s, otel, tf.
 - **Triple extraction cache**: SQLite cache (`.triple_cache.db`) keyed by message UUID. The stop hook fires on every Claude Code pause, causing re-processing. The cache ensures each message's LLM extraction only happens once — re-runs rebuild the RDF graph but skip API calls for cached messages.
-- **Incremental real-time ingestion**: Stop hook / pi hook / Codex publisher → RabbitMQ → pipeline-runner → Fuseki. Each job runs triple extraction, cache-first Wikidata linking (`link_entities_into_graph`), then upload. Triple and entity caches make repeated processing cheap; agentic Wikidata calls are capped per job (`DEVKG_SKIP_LINKING=1` to disable linking).
+- **Incremental real-time ingestion**: Stop hook / pi hook / Codex publisher / Cursor `stop` hook → RabbitMQ → pipeline-runner → Fuseki. Each job runs triple extraction, cache-first Wikidata linking (`link_entities_into_graph`), then upload. Triple and entity caches make repeated processing cheap; agentic Wikidata calls are capped per job (`DEVKG_SKIP_LINKING=1` to disable linking).
 
 ## Troubleshooting
 

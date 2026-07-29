@@ -90,7 +90,7 @@ The output RDF must follow the devkg ontology (`ontology/devkg.ttl`):
 
 | Platform | Data Location | Format |
 |----------|--------------|--------|
-| Cursor | `~/.cursor/...` or `~/.cursor-server/...` SQLite | SQLite with JSON blobs |
+| Cursor | `~/.cursor/projects/*/agent-transcripts/{uuid}/{uuid}.jsonl` | JSONL (`role` + `message.content[]`) |
 | VS Code Copilot | `Chat: Export Session...` (Ctrl+Shift+P) | JSON |
 | ChatGPT | Settings > Data Controls > Export | JSON zip |
 | Windsurf | `~/.windsurf/...` | SQLite (similar to Cursor) |

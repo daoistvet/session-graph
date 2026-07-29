@@ -49,6 +49,7 @@ services:
       - ~/.claude/projects:/claude-sessions:ro
       - ~/.pi/agent/sessions:/pi-sessions:ro
       - ~/.codex/sessions:/codex-sessions:ro
+      - ~/.cursor/projects:/cursor-sessions/projects:ro
       - ./output:/app/output
       - ./pipeline/cache:/app/pipeline/cache
     restart: unless-stopped

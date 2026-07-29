@@ -48,6 +48,19 @@ DLQ = "devkg_jobs_failed"
 WATERMARK_FILE = OUTPUT_DIR / "watermarks.json"
 
 
+def resolve_output_dir(container_path: str) -> Path:
+    """Pick platform-specific output directory (watermarks live beside TTLs)."""
+    base = Path(os.environ.get("OUTPUT_BASE", "/app/output"))
+    if "/cursor-sessions/" in container_path or ".cursor/projects" in container_path:
+        return base / "cursor"
+    if "/pi-sessions/" in container_path or ".pi/agent/sessions" in container_path:
+        return base / "pi"
+    if "/codex-sessions/" in container_path or ".codex/sessions" in container_path:
+        return base / "codex"
+    # Honor OUTPUT_DIR for Claude / unknown unless it already points at a platform subdir
+    return OUTPUT_DIR
+
+
 def log(level: str, msg: str):
     print(f"[{level}] {msg}", file=sys.stderr, flush=True)
 
@@ -130,6 +143,9 @@ def setup_queues(channel):
 def translate_path(host_path: str) -> str:
     """Translate host path to container path.
 
+    Host: ~/.cursor/projects/{slug}/agent-transcripts/{uuid}/{uuid}.jsonl
+    Container: /cursor-sessions/projects/{slug}/agent-transcripts/{uuid}/{uuid}.jsonl
+
     Host: ~/.claude/projects/{slug}/{session}.jsonl
     Container: /claude-sessions/{slug}/{session}.jsonl
 
@@ -139,9 +155,21 @@ def translate_path(host_path: str) -> str:
     Host: ~/.codex/sessions/{yyyy}/{mm}/{dd}/{session}.jsonl
     Container: /codex-sessions/{yyyy}/{mm}/{dd}/{session}.jsonl
     """
-    marker_claude = "/projects/"
+    # Cursor MUST be checked before Claude's "/projects/" match — paths contain
+    # ".cursor/projects/" which would otherwise remap into /claude-sessions.
+    idx = host_path.find("/.cursor/projects/")
+    if idx != -1:
+        return "/cursor-sessions" + host_path[idx + len("/.cursor") :]
+
+    marker_claude = "/.claude/projects/"
     idx = host_path.find(marker_claude)
     if idx != -1:
+        return "/claude-sessions" + host_path[idx + len("/.claude/projects") :]
+
+    # Legacy fallback for already-translated or unusual Claude paths
+    marker_projects = "/projects/"
+    idx = host_path.find(marker_projects)
+    if idx != -1 and ".cursor" not in host_path:
         return "/claude-sessions" + host_path[idx + len("/projects") :]
 
     marker_pi = "/sessions/"
@@ -177,13 +205,18 @@ def process_message(body: bytes) -> None:
     if not os.path.exists(container_path):
         raise FileNotFoundError(f"Transcript not found: {container_path} (host: {transcript_path})")
 
-    # Derive output filename
+    # Derive output filename (platform-specific dir avoids watermark collisions)
     basename = session_id or Path(container_path).stem
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    output_file = OUTPUT_DIR / f"{basename}.ttl"
+    output_dir = resolve_output_dir(container_path)
+    watermark_file = output_dir / "watermarks.json"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_file = output_dir / f"{basename}.ttl"
 
     # SHA256 watermark: skip if file content hasn't changed since last processing
-    watermarks = load_watermarks()
+    watermarks = {}
+    if watermark_file.exists():
+        with open(watermark_file) as f:
+            watermarks = json.load(f)
     current_hash = file_hash(container_path)
     if watermarks.get(basename) == current_hash:
         log("SKIP", f"{basename} (unchanged since last processing)")
@@ -201,13 +234,15 @@ def process_message(body: bytes) -> None:
     def _run_devkg():
         nonlocal devkg_triple_count
 
-        if "/pi-sessions/" in container_path or ".pi/agent/sessions" in container_path:
+        if "/cursor-sessions/" in container_path or ".cursor/projects" in container_path:
+            from pipeline.cursor_to_rdf import build_graph
+        elif "/pi-sessions/" in container_path or ".pi/agent/sessions" in container_path:
             from pipeline.pi_to_rdf import build_graph
         elif "/codex-sessions/" in container_path or ".codex/sessions" in container_path:
             from pipeline.codex_to_rdf import build_graph
         else:
             from pipeline.jsonl_to_rdf import build_graph
-            
+
         from pipeline.load_fuseki import ensure_dataset, upload_turtle
 
         graph = build_graph(container_path, skip_extraction=False, model=model)
@@ -239,7 +274,9 @@ def process_message(body: bytes) -> None:
 
     # Update watermark after successful processing
     watermarks[basename] = current_hash
-    save_watermarks(watermarks)
+    watermark_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(watermark_file, "w") as f:
+        json.dump(watermarks, f, indent=2)
 
     log("DONE", f"{basename} ({devkg_triple_count} devkg triples)")
 

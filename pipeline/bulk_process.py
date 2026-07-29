@@ -24,7 +24,9 @@ from pathlib import Path
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 PI_SESSIONS_DIR = Path.home() / ".pi" / "agent" / "sessions"
 CODEX_SESSIONS_DIR = Path.home() / ".codex" / "sessions"
+CURSOR_PROJECTS_DIR = Path.home() / ".cursor" / "projects"
 OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output" / "claude"
+CURSOR_OUTPUT_DIR = Path(__file__).resolve().parent.parent / "output" / "cursor"
 WATERMARK_FILE = OUTPUT_DIR / "watermarks.json"
 
 
@@ -58,9 +60,14 @@ def find_sessions(
     if CODEX_SESSIONS_DIR.exists():
         all_files.extend(list(CODEX_SESSIONS_DIR.rglob("*.jsonl")))
 
+    if CURSOR_PROJECTS_DIR.exists():
+        # Only agent-transcript JSONL (not other Cursor project artifacts)
+        all_files.extend(list(CURSOR_PROJECTS_DIR.glob("*/agent-transcripts/*/*.jsonl")))
+
     if not all_files:
         print(
-            f"Warning: No sessions found in {CLAUDE_PROJECTS_DIR}, {PI_SESSIONS_DIR}, or {CODEX_SESSIONS_DIR}",
+            f"Warning: No sessions found in {CLAUDE_PROJECTS_DIR}, {PI_SESSIONS_DIR}, "
+            f"{CODEX_SESSIONS_DIR}, or {CURSOR_PROJECTS_DIR}",
             file=sys.stderr,
         )
         return []
@@ -115,6 +122,12 @@ def session_needs_processing(session_path: Path, watermarks: dict) -> bool:
 def session_output_path(session_path: Path) -> Path:
     """Derive output .ttl path from a session JSONL path."""
     session_id = session_path.stem
+    if ".cursor/projects" in str(session_path):
+        # Prefer parent UUID directory name for Cursor agent-transcripts
+        if session_path.parent.name and session_path.parent.name != "agent-transcripts":
+            session_id = session_path.parent.name
+        CURSOR_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        return CURSOR_OUTPUT_DIR / f"{session_id}.ttl"
     return OUTPUT_DIR / f"{session_id}.ttl"
 
 
@@ -212,7 +225,9 @@ def main():
         print(f"\n[{i+1}/{len(to_process)}] {session_path.name}", file=sys.stderr)
 
         try:
-            if ".pi/agent/sessions" in str(session_path):
+            if ".cursor/projects" in str(session_path):
+                from pipeline.cursor_to_rdf import build_graph
+            elif ".pi/agent/sessions" in str(session_path):
                 from pipeline.pi_to_rdf import build_graph
             elif ".codex/sessions" in str(session_path):
                 from pipeline.codex_to_rdf import build_graph
