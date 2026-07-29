@@ -172,7 +172,17 @@ def build_graph(jsonl_path: str, skip_extraction: bool = False, model=None, deve
                 triples = cached
                 cache_hits += 1
             else:
-                triples = extract_triples_gemini(model, full_text)
+                triples = extract_triples_gemini(
+                    model,
+                    full_text,
+                    trace_metadata={
+                        "source_platform": "cursor",
+                        "session_id": session_id,
+                        "message_id": entry["id"],
+                        "source_file": str(path),
+                        "project": project_slug or "",
+                    },
+                )
                 cache_triples(entry["id"], triples, full_text)
                 time.sleep(0.5)
 
@@ -196,7 +206,7 @@ def main():
     parser.add_argument("input", help="Path to JSONL file")
     parser.add_argument("output", help="Path to output Turtle file")
     parser.add_argument("--skip-extraction", action="store_true", help="Skip LLM triple extraction")
-    parser.add_argument("--provider", help="LLM provider: gemini, openai, anthropic, ollama")
+    parser.add_argument("--provider", help="LLM provider: gemini, openai, anthropic, fireworks, ollama")
     parser.add_argument("--model", help="Model name override")
     parser.add_argument("--developer", default="developer", help="Developer name for provenance")
     args = parser.parse_args()
@@ -211,8 +221,8 @@ def main():
 
     model = None
     if not args.skip_extraction:
-        from pipeline.llm_providers import get_provider
-        model = get_provider(provider_name=args.provider, model_name=args.model)
+        from pipeline.llm_providers import get_extraction_model
+        model = get_extraction_model(provider_name=args.provider, model_name=args.model)
 
     print(f"Processing: {input_path}", file=sys.stderr)
     g = build_graph(str(input_path), skip_extraction=args.skip_extraction, model=model, developer=args.developer)

@@ -29,3 +29,8 @@ research/
 daemon/
 hooks/*.log
 logs/*.log
+
+# Benchmark artifacts (script is tracked; results/logs are regenerable)
+_scripts/*.log
+_scripts/benchmark_results*.json
+_scripts/__pycache__/

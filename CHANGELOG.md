@@ -2,6 +2,17 @@
 
 All notable changes to session-graph are documented here.
 
+## [0.12.0] - 2026-07-29
+
+### Changed
+- `get_provider()` is now a thin DevKG policy adapter over LangChain `init_chat_model()` and returns native chat models supporting `invoke()`, streaming, batching, async calls, and built-in LangSmith tracing.
+- Triple extraction and the Wikidata linker now share the same LangChain provider factory and emit consistently named LangSmith runs with platform/session/message provenance.
+- Provider dependencies target LangChain 1.x-compatible packages.
+
+### Added
+- Fireworks AI provider support through `langchain-fireworks`; Fireworks requires an explicit model ID.
+- Current `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, and `LANGSMITH_PROJECT` configuration examples.
+
 ## [0.11.0] - 2026-07-29
 
 ### Added

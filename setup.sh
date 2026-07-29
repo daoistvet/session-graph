@@ -65,18 +65,28 @@ else
     echo "    1) gemini     (Google AI Studio — recommended)"
     echo "    2) openai     (OpenAI API)"
     echo "    3) anthropic  (Anthropic API)"
-    echo "    4) ollama     (Local, no API key needed)"
+    echo "    4) fireworks  (Fireworks AI)"
+    echo "    5) ollama     (Local, no API key needed)"
     echo ""
-    read -rp "  Provider [1-4, default 1]: " PROVIDER_CHOICE
+    read -rp "  Provider [1-5, default 1]: " PROVIDER_CHOICE
     PROVIDER_CHOICE=${PROVIDER_CHOICE:-1}
 
     case "$PROVIDER_CHOICE" in
-        1) PROVIDER="gemini";    MODEL="gemini-2.5-flash"; KEY_VAR="GEMINI_API_KEY" ;;
-        2) PROVIDER="openai";    MODEL="gpt-4o-mini";      KEY_VAR="OPENAI_API_KEY" ;;
-        3) PROVIDER="anthropic"; MODEL="claude-haiku-4";    KEY_VAR="ANTHROPIC_API_KEY" ;;
-        4) PROVIDER="ollama";    MODEL="llama3.2";          KEY_VAR="" ;;
+        1) PROVIDER="gemini";    MODEL="gemini-2.5-flash";          KEY_VAR="GEMINI_API_KEY" ;;
+        2) PROVIDER="openai";    MODEL="gpt-4o-mini";               KEY_VAR="OPENAI_API_KEY" ;;
+        3) PROVIDER="anthropic"; MODEL="claude-haiku-4-5-latest";  KEY_VAR="ANTHROPIC_API_KEY" ;;
+        4) PROVIDER="fireworks"; MODEL="";                          KEY_VAR="FIREWORKS_API_KEY" ;;
+        5) PROVIDER="ollama";    MODEL="llama3.2";                  KEY_VAR="" ;;
         *) err "Invalid choice"; exit 1 ;;
     esac
+
+    if [ "$PROVIDER" = "fireworks" ]; then
+        read -rp "  Enter the Fireworks model ID: " MODEL
+        if [ -z "$MODEL" ]; then
+            err "Fireworks requires an explicit model ID"
+            exit 1
+        fi
+    fi
 
     cp .env.example .env
 

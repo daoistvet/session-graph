@@ -189,8 +189,8 @@ Closed-world design: the LLM is instructed to use ONLY these predicates. A norma
 ontology/devkg.ttl                    # OWL ontology (PROV-O + SIOC + SKOS + DC + Schema.org + 24 predicates)
 pipeline/
 +-- common.py                        # Shared: namespaces, URI helpers, RDF node builders
-+-- vertex_ai.py                     # Vertex AI auth, Gemini + Claude model wrappers
-+-- triple_extraction.py             # LLM prompt, extraction, normalization, stopwords
++-- llm_providers.py                 # DevKG factory returning native LangChain chat models
++-- triple_extraction.py             # LLM prompt, LangChain invoke, normalization, stopwords
 +-- jsonl_to_rdf.py                  # Claude Code JSONL -> RDF (assistant-only extraction)
 +-- pi_to_rdf.py                     # pi coding agent JSONL -> RDF
 +-- codex_to_rdf.py                  # Codex JSONL -> RDF
@@ -214,7 +214,6 @@ pipeline/
 cognee_eval/                         # Cognee evaluation (rejected -- no RDF output)
 research/                            # Wikidata entity linking research docs
 docker/
-+-- __init__.py                      # Package marker
 +-- queue_consumer.py                # RabbitMQ consumer: extract + inline Wikidata link + Fuseki upload
 +-- codex_publisher.py               # Polls ~/.codex/sessions and publishes jobs to RabbitMQ
 Dockerfile.pipeline                   # Python 3.12 image with pipeline deps + pika
@@ -283,6 +282,8 @@ bash tests/test_integration.sh
 
 ## Key Design Decisions
 
+- **LangChain-native providers**: `get_provider()` retains DevKG's provider selection, defaults, and Vertex configuration policy but delegates construction to `init_chat_model()` and returns a native `BaseChatModel`. Triple extraction and the linker use standard `invoke()` calls; Gemini, OpenAI, Anthropic, Fireworks, and Ollama share LangSmith's built-in tracing path.
+- **LangSmith provenance schema**: Extraction runs are named `devkg.triple_extraction`; linker runs are named `devkg.wikidata_linking`. DevKG metadata uses `source_platform`, `session_id`, `message_id`, `source_file`, and `project`, plus `platform:<name>` tags. Model identity relies on LangSmith's canonical `ls_provider` and `ls_model_name` fields rather than duplicate application metadata.
 - **Assistant-only extraction**: Only assistant messages are sent to the LLM for triple extraction. User messages are short prompts with no extractable knowledge.
 - **Closed-world predicate vocabulary**: 24 predicates defined as OWL ObjectProperties. LLM is constrained to this set; any deviation is fuzzy-matched to the closest predicate (fallback: `relatedTo`). Prompt includes wrong/correct examples to keep `relatedTo` usage under 1%.
 - **Dual storage**: Direct edges for fast traversal + reified `KnowledgeTriple` nodes for provenance (links back to source message + session).
