@@ -402,7 +402,7 @@ LANGSMITH_API_KEY=your-key
 LANGSMITH_PROJECT=devkg
 ```
 
-Fireworks requires an explicit model ID in `LLM_MODEL`. Gemini uses Vertex AI automatically when `GOOGLE_CLOUD_PROJECT` or `ANTHROPIC_VERTEX_PROJECT_ID` is configured; otherwise it uses the Gemini API key.
+Fireworks requires an explicit model ID in `LLM_MODEL`. The benchmark-validated default is `accounts/fireworks/models/gpt-oss-120b` ($0.15/$0.60 per M tokens), which works for both triple extraction and Wikidata linking — approximately 2.5× cheaper than the previous Gemini 2.5 Flash + Gemini 3 Flash combination. Gemini uses Vertex AI automatically when `GOOGLE_CLOUD_PROJECT` or `ANTHROPIC_VERTEX_PROJECT_ID` is configured; otherwise it uses the Gemini API key.
 
 LangSmith extraction and Wikidata-linking runs use stable names (`devkg.triple_extraction`, `devkg.wikidata_linking`) and filterable provenance metadata: `source_platform`, `session_id`, `message_id`, `source_file`, and `project`. Model identity uses LangSmith's canonical `ls_provider` and `ls_model_name` fields; platform tags use `platform:<name>`.
 

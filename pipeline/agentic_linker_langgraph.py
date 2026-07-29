@@ -138,6 +138,7 @@ _LINKER_DEFAULT_MODELS = {
     "gemini": "gemini-3-flash-preview",
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5-latest",
+    "fireworks": "accounts/fireworks/models/gpt-oss-120b",
     "ollama": "llama3.1",
 }
 
