@@ -5,11 +5,8 @@ ReAct-style Wikidata entity linker using LangChain + LangGraph.
 Uses an LLM agent to search Wikidata, reason about ambiguous results,
 and return the best QID for developer entities.
 
-Supports multiple LLM providers via environment variables:
-    - GEMINI_API_KEY   -> Google Generative AI (default)
-    - OPENAI_API_KEY   -> OpenAI
-    - ANTHROPIC_API_KEY -> Anthropic
-    - Ollama           -> Local Ollama (fallback)
+Supports Gemini, OpenAI, Anthropic, Fireworks, and Ollama through the
+shared LangChain-backed ``get_provider`` factory.
 
 Usage:
     python -m pipeline.agentic_linker_langgraph
@@ -28,6 +25,8 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
+
+from pipeline.llm_providers import get_provider, resolve_provider_name
 
 # Load .env from project root
 load_dotenv(os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -135,50 +134,38 @@ Steps:
 _shared_model = None
 
 
-def _get_shared_model():
-    """Return a shared LangChain chat model instance (created once).
+_LINKER_DEFAULT_MODELS = {
+    "gemini": "gemini-3-flash-preview",
+    "openai": "gpt-4o-mini",
+    "anthropic": "claude-haiku-4-5-latest",
+    "ollama": "llama3.1",
+}
 
-    Auto-detects provider from env vars:
-        Vertex AI (ANTHROPIC_VERTEX_PROJECT_ID) -> ChatGoogleGenerativeAI(vertexai=True)
-        GEMINI_API_KEY   -> ChatGoogleGenerativeAI
-        OPENAI_API_KEY   -> ChatOpenAI
-        ANTHROPIC_API_KEY -> ChatAnthropic
-        (fallback)       -> ChatOllama
-    """
+
+def _get_shared_model():
+    """Return one shared model created by the project LangChain factory."""
     global _shared_model
     if _shared_model is not None:
         return _shared_model
 
-    project = os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
-    if project:
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        _shared_model = ChatGoogleGenerativeAI(
-            model="gemini-3-flash-preview",
-            vertexai=True,
-            project=project,
-            location="global",
+    provider = resolve_provider_name()
+    model_name = (
+        os.environ.get("DEVKG_LINKER_MODEL")
+        or os.environ.get("LLM_MODEL")
+        or _LINKER_DEFAULT_MODELS.get(provider)
+    )
+    if not model_name:
+        raise ValueError(
+            f"Provider '{provider}' requires LLM_MODEL or DEVKG_LINKER_MODEL "
+            f"for entity linking."
         )
-        print(f"  Linker agent: Gemini 3 Flash (vertex-ai, {project}/global)", file=sys.stderr)
-    elif os.environ.get("GEMINI_API_KEY"):
-        from langchain_google_genai import ChatGoogleGenerativeAI
-        _shared_model = ChatGoogleGenerativeAI(
-            model="gemini-3-flash-preview",
-            google_api_key=os.environ["GEMINI_API_KEY"],
-        )
-        print("  Linker agent: Gemini 3 Flash (google-generativeai)", file=sys.stderr)
-    elif os.environ.get("OPENAI_API_KEY"):
-        from langchain_openai import ChatOpenAI
-        _shared_model = ChatOpenAI(model="gpt-4o-mini", temperature=0)
-        print("  Linker agent: OpenAI (gpt-4o-mini)", file=sys.stderr)
-    elif os.environ.get("ANTHROPIC_API_KEY"):
-        from langchain_anthropic import ChatAnthropic
-        _shared_model = ChatAnthropic(model="claude-haiku-4-5-latest", temperature=0)
-        print("  Linker agent: Anthropic (claude-haiku-4-5-latest)", file=sys.stderr)
-    else:
-        from langchain_ollama import ChatOllama
-        _shared_model = ChatOllama(model="llama3.1", temperature=0)
-        print("  Linker agent: Ollama (llama3.1)", file=sys.stderr)
 
+    _shared_model = get_provider(
+        provider_name=provider,
+        model_name=model_name,
+        temperature=0,
+    )
+    print(f"  Linker agent: {provider}/{model_name}", file=sys.stderr)
     return _shared_model
 
 
@@ -203,11 +190,14 @@ def create_linker_agent():
 def link_entity(
     entity: str,
     context: str,
+    *,
+    trace_metadata: dict[str, object] | None = None,
 ) -> tuple[WikidataMatch, float]:
     """Link a single entity to Wikidata using the ReAct agent.
 
     Reuses a shared model instance; agent state is per-invocation
     (no leakage between entities).
+    Optional provenance metadata is attached to the LangSmith agent run.
     Returns (WikidataMatch, elapsed_seconds).
     """
     agent = create_linker_agent()
@@ -216,8 +206,18 @@ def link_entity(
 
     start = time.time()
 
+    metadata = {**(trace_metadata or {}), "entity": entity}
+    tags = ["devkg", "wikidata-linking"]
+    if source_platform := metadata.get("source_platform"):
+        tags.append(f"platform:{source_platform}")
+
     result = agent.invoke(
         {"messages": [("user", user_message)]},
+        config={
+            "run_name": "devkg.wikidata_linking",
+            "tags": tags,
+            "metadata": metadata,
+        },
     )
 
     elapsed = time.time() - start

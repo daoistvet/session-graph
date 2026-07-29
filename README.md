@@ -164,7 +164,9 @@ cp .env.example .env
 
 # 2. Install
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+# Choose one: requirements-gemini.txt, -openai.txt, -anthropic.txt,
+# -fireworks.txt, or -ollama.txt
+pip install -r requirements-gemini.txt
 
 # 3. Create output directories
 mkdir -p output/claude output/deepseek output/grok output/warp logs
@@ -377,7 +379,7 @@ RDF is an ISO standard (W3C). Your data is portable. You can move it to any trip
 
 ## Provider Support
 
-session-graph supports multiple LLM providers for triple extraction and entity linking:
+session-graph keeps `get_provider()` as its configuration adapter while returning native LangChain chat models. Every provider therefore supports the standard `invoke()`, `stream()`, `batch()`, and async interfaces plus automatic LangSmith tracing.
 
 | Provider | Triple Extraction | Entity Linking | Batch Processing |
 |----------|-------------------|----------------|------------------|
@@ -385,18 +387,24 @@ session-graph supports multiple LLM providers for triple extraction and entity l
 | Google Gemini (AI Studio) | Yes | Yes | No |
 | OpenAI | Yes | Yes | No |
 | Anthropic (Claude) | Yes | Yes | No |
-| Ollama (local) | Yes | Yes | No |
+| Fireworks AI | Yes | Model must support tool calling | No |
+| Ollama (local) | Yes | Model must support tool calling | No |
 
 Configure your provider in `.env`:
 
 ```env
-# Pick one:
-PROVIDER=gemini-vertex    # Google Vertex AI (supports batch)
-PROVIDER=gemini           # Google AI Studio
-PROVIDER=openai           # OpenAI API
-PROVIDER=anthropic        # Anthropic API
-PROVIDER=ollama           # Local Ollama
+LLM_PROVIDER=gemini       # gemini, openai, anthropic, fireworks, or ollama
+LLM_MODEL=gemini-2.5-flash
+
+# Optional native LangSmith telemetry:
+LANGSMITH_TRACING=true
+LANGSMITH_API_KEY=your-key
+LANGSMITH_PROJECT=devkg
 ```
+
+Fireworks requires an explicit model ID in `LLM_MODEL`. Gemini uses Vertex AI automatically when `GOOGLE_CLOUD_PROJECT` or `ANTHROPIC_VERTEX_PROJECT_ID` is configured; otherwise it uses the Gemini API key.
+
+LangSmith extraction and Wikidata-linking runs use stable names (`devkg.triple_extraction`, `devkg.wikidata_linking`) and filterable provenance metadata: `source_platform`, `session_id`, `message_id`, `source_file`, and `project`. Model identity uses LangSmith's canonical `ls_provider` and `ls_model_name` fields; platform tags use `platform:<name>`.
 
 ## Example SPARQL Queries
 
@@ -540,7 +548,7 @@ session-graph/
 +-- ontology/devkg.ttl                    # OWL ontology (24 predicates)
 +-- pipeline/
 |   +-- common.py                         # Shared: namespaces, URI helpers
-|   +-- llm_providers.py                   # LLM provider abstraction (Gemini, OpenAI, Anthropic, Ollama)
+|   +-- llm_providers.py                   # LangChain model factory (Gemini, OpenAI, Anthropic, Fireworks, Ollama)
 |   +-- triple_extraction.py              # LLM prompt, extraction, normalization
 |   +-- jsonl_to_rdf.py                   # Claude Code JSONL --> RDF
 |   +-- pi_to_rdf.py                      # pi coding agent JSONL --> RDF

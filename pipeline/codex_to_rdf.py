@@ -156,7 +156,17 @@ def build_graph(jsonl_path: str, skip_extraction: bool = False, model=None, deve
                 triples = cached
                 cache_hits += 1
             else:
-                triples = extract_triples_gemini(model, full_text)
+                triples = extract_triples_gemini(
+                    model,
+                    full_text,
+                    trace_metadata={
+                        "source_platform": "codex",
+                        "session_id": session_id,
+                        "message_id": msg_id,
+                        "source_file": str(path),
+                        "project": Path(cwd).name if cwd else "",
+                    },
+                )
                 cache_triples(msg_id, triples, full_text)
                 time.sleep(0.5)
 
@@ -184,7 +194,7 @@ def main():
     parser.add_argument("--skip-extraction", action="store_true", help="Skip LLM triple extraction")
     parser.add_argument(
         "--provider",
-        help="LLM provider: gemini, openai, anthropic, ollama (auto-detect if omitted)",
+        help="LLM provider: gemini, openai, anthropic, fireworks, ollama (auto-detect if omitted)",
     )
     parser.add_argument("--model", help="LLM model name override")
     args = parser.parse_args()

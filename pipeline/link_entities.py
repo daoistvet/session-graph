@@ -543,11 +543,16 @@ def link_entities_into_graph(
     max_workers: int = DEFAULT_WORKERS,
     max_agentic_calls: int = DEFAULT_MAX_AGENTIC_CALLS,
     agentic: bool = True,
+    trace_metadata: dict[str, object] | None = None,
 ) -> dict:
     """Add Wikidata owl:sameAs triples to an in-memory session graph (cache-first).
 
     Phase 1: SQLite cache lookups — no LLM calls.
     Phase 2: Parallel agentic linker for cache misses (capped per invocation).
+
+    ``trace_metadata`` is attached to every agentic linker run as provenance
+    (source_platform, session_id, source_file, project). It is copied per
+    entity call with an added ``entity`` field.
 
     Returns stats dict with cache_hits, linked, negative_cache_hits, agentic_calls, skipped.
     """
@@ -612,6 +617,7 @@ def link_entities_into_graph(
                         _agentic_link_one,
                         label,
                         contexts.get(label.lower(), "developer knowledge graph entity"),
+                        trace_metadata,
                     ): (label, uri)
                     for label, uri in to_resolve
                 }
@@ -638,15 +644,23 @@ def link_entities_into_graph(
     return stats
 
 
-def _agentic_link_one(label: str, context: str = "developer knowledge graph entity") -> tuple:
+def _agentic_link_one(
+    label: str,
+    context: str = "developer knowledge graph entity",
+    trace_metadata: dict[str, object] | None = None,
+) -> tuple:
     """Call the agentic linker for a single entity. Thread-safe (no shared state).
+
+    ``trace_metadata`` is forwarded to the linker run as LangSmith provenance.
 
     Returns (label, qid, confidence, description, reasoning, elapsed) or
     (label, None, 0.0, None, error_msg, 0.0) on failure.
     """
     from pipeline.agentic_linker_langgraph import link_entity as agentic_link_entity
     try:
-        match_result, elapsed = agentic_link_entity(label, context=context)
+        match_result, elapsed = agentic_link_entity(
+            label, context=context, trace_metadata=trace_metadata
+        )
         return (label, match_result.qid, match_result.confidence,
                 match_result.description, match_result.reasoning, elapsed)
     except Exception as e:

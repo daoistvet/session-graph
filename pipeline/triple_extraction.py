@@ -5,10 +5,10 @@ This module builds an ontologist prompt and parses the LLM response into
 normalized (subject, predicate, object) triples aligned with the devkg ontology.
 
 Usage:
-    from pipeline.vertex_ai import get_gemini_model
+    from pipeline.llm_providers import get_provider
     from pipeline.triple_extraction import extract_triples_gemini
 
-    model = get_gemini_model()
+    model = get_provider()
     triples = extract_triples_gemini(model, "Neo4j stores data as a property graph")
     # [{"subject": "neo4j", "predicate": "isTypeOf", "object": "property graph"}]
 """
@@ -521,8 +521,16 @@ _RETRY_MAX_CHARS = 1000
 _TRUNCATION_RETRY_MAX_CHARS = 800
 
 
-def extract_triples_gemini(model, text: str) -> list[dict]:
-    """Extract knowledge triples from text using a Gemini model.
+def extract_triples_gemini(
+    model,
+    text: str,
+    *,
+    trace_metadata: dict[str, object] | None = None,
+) -> list[dict]:
+    """Extract knowledge triples using a LangChain chat model.
+
+    The historical function name is retained for parser compatibility. The
+    model may be any LangChain ``BaseChatModel`` returned by ``get_provider``.
 
     Handles three failure modes:
     1. API errors — retry with shorter input
@@ -530,8 +538,9 @@ def extract_triples_gemini(model, text: str) -> list[dict]:
     3. Unparseable response — retry with shorter input
 
     Args:
-        model: A vertexai GenerativeModel instance (from vertex_ai.get_gemini_model).
+        model: A LangChain chat model supporting ``invoke()``.
         text: The text to extract triples from.
+        trace_metadata: Optional provenance fields attached to the LangSmith run.
 
     Returns:
         A list of normalized triple dicts, each with 'subject', 'predicate', 'object'.
@@ -546,7 +555,23 @@ def extract_triples_gemini(model, text: str) -> list[dict]:
         prompt = build_extraction_prompt(input_text)
 
         try:
-            response = model.generate_content(prompt)
+            metadata = {
+                **(trace_metadata or {}),
+                "attempt": attempt + 1,
+                "input_chars": len(input_text),
+            }
+            tags = ["devkg", "triple-extraction"]
+            if source_platform := metadata.get("source_platform"):
+                tags.append(f"platform:{source_platform}")
+
+            response = model.invoke(
+                prompt,
+                config={
+                    "run_name": "devkg.triple_extraction",
+                    "tags": tags,
+                    "metadata": metadata,
+                },
+            )
             raw = response.text.strip()
         except Exception as e:
             print(f"[triple_extraction] API error (attempt {attempt + 1}): {e}", file=sys.stderr)

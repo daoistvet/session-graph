@@ -257,7 +257,7 @@ def main():
         "--skip-extraction", action="store_true",
         help="Skip Gemini triple extraction (structure only)",
     )
-    parser.add_argument("--provider", help="LLM provider: gemini, openai, anthropic, ollama (auto-detect if omitted)")
+    parser.add_argument("--provider", help="LLM provider: gemini, openai, anthropic, fireworks, ollama (auto-detect if omitted)")
     parser.add_argument("--model", help="Model name override")
     parser.add_argument("--developer", default="developer", help="Developer name for provenance (default: developer)")
     parser.add_argument(

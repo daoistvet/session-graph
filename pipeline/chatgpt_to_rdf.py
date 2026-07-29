@@ -356,7 +356,7 @@ def main():
                         help="Global conversation index to process (omit to list all)")
     parser.add_argument("--skip-extraction", action="store_true",
                         help="Skip LLM triple extraction")
-    parser.add_argument("--provider", help="LLM provider: gemini, openai, anthropic, ollama (auto-detect if omitted)")
+    parser.add_argument("--provider", help="LLM provider: gemini, openai, anthropic, fireworks, ollama (auto-detect if omitted)")
     parser.add_argument("--model", help="Model name override")
     parser.add_argument("--date-from", default=None,
                         help="Only include conversations from this date onwards (YYYY-MM-DD)")

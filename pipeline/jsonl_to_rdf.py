@@ -159,7 +159,17 @@ def build_graph(jsonl_path: str, skip_extraction: bool = False, model=None, deve
                 triples = cached
                 cache_hits += 1
             else:
-                triples = extract_triples_gemini(model, full_text)
+                triples = extract_triples_gemini(
+                    model,
+                    full_text,
+                    trace_metadata={
+                        "source_platform": "claude",
+                        "session_id": session_id or Path(jsonl_path).stem,
+                        "message_id": uuid,
+                        "source_file": str(Path(jsonl_path).resolve()),
+                        "project": project_slug or "",
+                    },
+                )
                 cache_triples(uuid, triples, full_text)
                 time.sleep(0.5)
 
@@ -182,7 +192,7 @@ def main():
     parser.add_argument("input", help="Path to JSONL file")
     parser.add_argument("output", help="Path to output Turtle file")
     parser.add_argument("--skip-extraction", action="store_true", help="Skip LLM triple extraction")
-    parser.add_argument("--provider", help="LLM provider: gemini, openai, anthropic, ollama (auto-detect if omitted)")
+    parser.add_argument("--provider", help="LLM provider: gemini, openai, anthropic, fireworks, ollama (auto-detect if omitted)")
     parser.add_argument("--model", help="Model name override")
     parser.add_argument("--developer", default="developer", help="Developer name for provenance (default: developer)")
     args = parser.parse_args()

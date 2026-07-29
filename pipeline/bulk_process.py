@@ -157,7 +157,7 @@ def main():
     )
     parser.add_argument(
         "--provider", default=None,
-        help="LLM provider: gemini, openai, anthropic, ollama (auto-detect if omitted)",
+        help="LLM provider: gemini, openai, anthropic, fireworks, ollama (auto-detect if omitted)",
     )
     parser.add_argument(
         "--model", default=None,

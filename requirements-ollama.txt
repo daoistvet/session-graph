@@ -1,0 +1,5 @@
+# Ollama local provider
+# Install with: pip install -r requirements-ollama.txt
+
+-r requirements.txt
+langchain-ollama>=1.0,<2.0

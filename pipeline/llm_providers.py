@@ -1,320 +1,191 @@
-"""
-Provider-agnostic LLM abstraction layer.
+"""LangChain-backed chat model factory for DevKG.
 
-Replaces the Vertex AI-specific vertex_ai.py with a generic interface
-that supports multiple LLM backends via a uniform generate_content() API.
-
-Usage:
-    from pipeline.llm_providers import get_provider
-
-    model = get_provider("gemini", "gemini-2.5-flash")
-    response = model.generate_content("Extract triples from this text...")
-    print(response.text)
-
-Supported providers:
-    - gemini    : Google Generative AI (GEMINI_API_KEY)
-    - openai    : OpenAI API (OPENAI_API_KEY)
-    - anthropic : Anthropic API (ANTHROPIC_API_KEY)
-    - ollama    : Local Ollama server (no API key, default http://localhost:11434)
+``get_provider`` remains the project-level adapter for provider selection and
+configuration policy. The returned object is a native LangChain
+``BaseChatModel`` supporting ``invoke()``, ``stream()``, ``batch()``, async
+methods, and automatic LangSmith tracing.
 """
 
-import json
+from __future__ import annotations
+
 import os
 import sys
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from dotenv import load_dotenv
 
-# Load .env from project root
-load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
+if TYPE_CHECKING:
+    from langchain_core.language_models.chat_models import BaseChatModel
 
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
-@dataclass
-class ModelResponse:
-    """Uniform response object with a .text property, matching the interface
-    expected by triple_extraction.py (response.text)."""
-
-    text: str
-
-
-class LLMProvider(ABC):
-    """Abstract base class for LLM providers.
-
-    All providers must implement generate_content() which accepts a prompt
-    string and returns a ModelResponse with a .text attribute.
-    """
-
-    def __init__(self, model_name: str):
-        self.model_name = model_name
-
-    @abstractmethod
-    def generate_content(self, prompt: str) -> ModelResponse:
-        """Send a prompt to the LLM and return the response text."""
-        ...
-
-    def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(model={self.model_name})"
-
-
-# ---------------------------------------------------------------------------
-# Gemini via google-genai (uses GEMINI_API_KEY, NOT Vertex AI)
-# ---------------------------------------------------------------------------
-
-
-class GeminiProvider(LLMProvider):
-    """Google Gemini provider using the google-genai SDK.
-
-    Supports two backends (auto-detected):
-      - Vertex AI: when GOOGLE_APPLICATION_CREDENTIALS or ADC is configured
-        (requires ANTHROPIC_VERTEX_PROJECT_ID or GOOGLE_CLOUD_PROJECT + CLOUD_ML_REGION)
-      - Gemini Developer API: when only GEMINI_API_KEY is available
-    """
-
-    def __init__(self, model_name: str = "gemini-2.5-flash"):
-        super().__init__(model_name)
-        try:
-            from google import genai
-        except ImportError:
-            raise ImportError(
-                "google-genai package required. Install: pip install google-genai"
-            )
-
-        project = os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID") or os.environ.get("GOOGLE_CLOUD_PROJECT")
-        # Gemini 3.x models MUST use the global endpoint regardless of env config
-        if model_name.startswith("gemini-3"):
-            region = "global"
-        else:
-            region = os.environ.get("CLOUD_ML_REGION", "us-east5")
-        use_vertex = bool(project)
-
-        if use_vertex:
-            self._client = genai.Client(
-                vertexai=True,
-                project=project,
-                location=region,
-            )
-            backend = f"vertex-ai ({project}/{region})"
-        else:
-            api_key = os.environ.get("GEMINI_API_KEY")
-            if not api_key:
-                raise RuntimeError(
-                    "No Vertex AI project or GEMINI_API_KEY found. "
-                    "Set ANTHROPIC_VERTEX_PROJECT_ID + CLOUD_ML_REGION for Vertex AI, "
-                    "or GEMINI_API_KEY for the Gemini Developer API."
-                )
-            self._client = genai.Client(api_key=api_key, vertexai=False)
-            backend = "gemini-developer-api"
-
-        print(f"  Gemini provider: {model_name} ({backend})", file=sys.stderr)
-
-    def generate_content(self, prompt: str) -> ModelResponse:
-        response = self._client.models.generate_content(
-            model=self.model_name,
-            contents=prompt,
-            config={
-                "response_mime_type": "application/json",
-                "temperature": 0.2,
-                "max_output_tokens": 8192,
-            },
-        )
-        return ModelResponse(text=response.text)
-
-
-# ---------------------------------------------------------------------------
-# OpenAI
-# ---------------------------------------------------------------------------
-
-
-class OpenAIProvider(LLMProvider):
-    """OpenAI API provider."""
-
-    def __init__(self, model_name: str = "gpt-4o-mini"):
-        super().__init__(model_name)
-        try:
-            from openai import OpenAI
-        except ImportError:
-            raise ImportError(
-                "openai package required. Install: pip install openai"
-            )
-
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY not set.")
-
-        self._client = OpenAI(api_key=api_key)
-        print(f"  OpenAI provider: {model_name}", file=sys.stderr)
-
-    def generate_content(self, prompt: str) -> ModelResponse:
-        response = self._client.chat.completions.create(
-            model=self.model_name,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=8192,
-            response_format={"type": "json_object"},
-        )
-        text = response.choices[0].message.content or ""
-        return ModelResponse(text=text)
-
-
-# ---------------------------------------------------------------------------
-# Anthropic
-# ---------------------------------------------------------------------------
-
-
-class AnthropicProvider(LLMProvider):
-    """Anthropic API provider."""
-
-    def __init__(self, model_name: str = "claude-haiku-4-5-latest"):
-        super().__init__(model_name)
-        try:
-            from anthropic import Anthropic
-        except ImportError:
-            raise ImportError(
-                "anthropic package required. Install: pip install anthropic"
-            )
-
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY not set.")
-
-        self._client = Anthropic(api_key=api_key)
-        print(f"  Anthropic provider: {model_name}", file=sys.stderr)
-
-    def generate_content(self, prompt: str) -> ModelResponse:
-        response = self._client.messages.create(
-            model=self.model_name,
-            max_tokens=8192,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-        )
-        text = response.content[0].text
-        return ModelResponse(text=text)
-
-
-# ---------------------------------------------------------------------------
-# Ollama (local)
-# ---------------------------------------------------------------------------
-
-
-class OllamaProvider(LLMProvider):
-    """Ollama local server provider (no API key needed)."""
-
-    def __init__(self, model_name: str = "llama3.1"):
-        super().__init__(model_name)
-        self._base_url = os.environ.get(
-            "OLLAMA_BASE_URL", "http://localhost:11434"
-        )
-        print(
-            f"  Ollama provider: {model_name} ({self._base_url})",
-            file=sys.stderr,
-        )
-
-    def generate_content(self, prompt: str) -> ModelResponse:
-        import requests
-
-        response = requests.post(
-            f"{self._base_url}/api/generate",
-            json={
-                "model": self.model_name,
-                "prompt": prompt,
-                "stream": False,
-                "format": "json",
-                "options": {
-                    "temperature": 0.2,
-                    "num_predict": 8192,
-                },
-            },
-            timeout=120,
-        )
-        response.raise_for_status()
-        text = response.json().get("response", "")
-        return ModelResponse(text=text)
-
-
-# ---------------------------------------------------------------------------
-# Factory
-# ---------------------------------------------------------------------------
-
-_PROVIDER_MAP = {
-    "gemini": GeminiProvider,
-    "openai": OpenAIProvider,
-    "anthropic": AnthropicProvider,
-    "ollama": OllamaProvider,
+_PROVIDER_IDS = {
+    "gemini": "google_genai",
+    "openai": "openai",
+    "anthropic": "anthropic",
+    "fireworks": "fireworks",
+    "ollama": "ollama",
 }
 
-# Default models per provider
-_DEFAULT_MODELS = {
+_PROVIDER_ALIASES = {
+    "google": "gemini",
+    "google_genai": "gemini",
+    "google-genai": "gemini",
+    "gemini-vertex": "gemini",
+    "vertex": "gemini",
+    "claude": "anthropic",
+}
+
+_DEFAULT_MODELS: dict[str, str | None] = {
     "gemini": "gemini-2.5-flash",
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5-latest",
+    # Fireworks model availability changes independently of LangChain. Require
+    # an explicit model rather than silently selecting a stale serverless ID.
+    "fireworks": None,
     "ollama": "llama3.1",
 }
 
 
-def get_provider(
-    provider_name: str | None = None,
-    model_name: str | None = None,
-) -> LLMProvider:
-    """Create an LLM provider instance.
-
-    Args:
-        provider_name: One of 'gemini', 'openai', 'anthropic', 'ollama'.
-                       If None, auto-detects from available env vars.
-        model_name: Model identifier. If None, uses the provider's default.
-
-    Returns:
-        An LLMProvider instance with generate_content() method.
-
-    Raises:
-        RuntimeError: If no provider can be determined or initialized.
-    """
-    if provider_name is None:
-        provider_name = _auto_detect_provider()
-
-    provider_name = provider_name.lower()
-
-    if provider_name not in _PROVIDER_MAP:
-        raise ValueError(
-            f"Unknown provider '{provider_name}'. "
-            f"Supported: {', '.join(_PROVIDER_MAP.keys())}"
-        )
-
-    if model_name is None:
-        model_name = _DEFAULT_MODELS[provider_name]
-
-    cls = _PROVIDER_MAP[provider_name]
-    return cls(model_name)
+def _normalize_provider(provider_name: str) -> str:
+    normalized = provider_name.strip().lower()
+    return _PROVIDER_ALIASES.get(normalized, normalized)
 
 
-def _auto_detect_provider() -> str:
-    """Auto-detect provider from environment variables.
+def resolve_provider_name(provider_name: str | None = None) -> str:
+    """Resolve an explicit, configured, or credential-detected provider name."""
+    selected = provider_name or os.environ.get("LLM_PROVIDER")
+    if selected:
+        normalized = _normalize_provider(selected)
+        if normalized not in _PROVIDER_IDS:
+            raise ValueError(
+                f"Unknown provider '{selected}'. Supported: {', '.join(list_providers())}"
+            )
+        return normalized
 
-    Priority order: GEMINI_API_KEY > OPENAI_API_KEY > ANTHROPIC_API_KEY > ollama fallback.
-    """
-    if os.environ.get("GEMINI_API_KEY"):
+    if (
+        os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID")
+        or os.environ.get("GOOGLE_CLOUD_PROJECT")
+        or os.environ.get("GEMINI_API_KEY")
+        or os.environ.get("GOOGLE_API_KEY")
+    ):
         return "gemini"
     if os.environ.get("OPENAI_API_KEY"):
         return "openai"
     if os.environ.get("ANTHROPIC_API_KEY"):
         return "anthropic"
+    if os.environ.get("FIREWORKS_API_KEY"):
+        return "fireworks"
 
-    # Check if Ollama is available as a fallback
+    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
     try:
         import requests
 
-        resp = requests.get("http://localhost:11434/api/tags", timeout=2)
-        if resp.status_code == 200:
+        response = requests.get(f"{base_url.rstrip('/')}/api/tags", timeout=2)
+        if response.status_code == 200:
             return "ollama"
     except Exception:
         pass
 
     raise RuntimeError(
-        "No LLM provider detected. Set one of: GEMINI_API_KEY, "
-        "OPENAI_API_KEY, ANTHROPIC_API_KEY, or start Ollama locally."
+        "No LLM provider detected. Set LLM_PROVIDER and its credentials, or "
+        "configure one of GOOGLE_CLOUD_PROJECT, GEMINI_API_KEY, OPENAI_API_KEY, "
+        "ANTHROPIC_API_KEY, FIREWORKS_API_KEY, or a reachable Ollama server."
     )
 
 
+def get_default_model(provider_name: str) -> str:
+    """Return DevKG's default model, requiring explicit Fireworks selection."""
+    provider = _normalize_provider(provider_name)
+    if provider not in _DEFAULT_MODELS:
+        raise ValueError(
+            f"Unknown provider '{provider_name}'. Supported: {', '.join(list_providers())}"
+        )
+    model = _DEFAULT_MODELS[provider]
+    if model is None:
+        raise ValueError(
+            f"Provider '{provider}' requires an explicit model via --model or LLM_MODEL."
+        )
+    return model
+
+
+def _resolve_model_name(
+    provider: str,
+    requested_provider: str | None,
+    model_name: str | None,
+) -> str:
+    if model_name:
+        return model_name
+
+    configured_model = os.environ.get("LLM_MODEL")
+    configured_provider = os.environ.get("LLM_PROVIDER")
+    if configured_model and (
+        requested_provider is None
+        or (
+            configured_provider
+            and _normalize_provider(configured_provider) == provider
+        )
+    ):
+        return configured_model
+
+    return get_default_model(provider)
+
+
+def get_provider(
+    provider_name: str | None = None,
+    model_name: str | None = None,
+    *,
+    temperature: float = 0.2,
+    max_tokens: int = 8192,
+    max_retries: int = 6,
+    **model_kwargs: Any,
+) -> BaseChatModel:
+    """Return a native LangChain chat model using DevKG configuration policy.
+
+    Provider construction is delegated to LangChain's ``init_chat_model``.
+    Provider-specific packages are loaded lazily by LangChain.
+    """
+    from langchain.chat_models import init_chat_model
+
+    provider = resolve_provider_name(provider_name)
+    model = _resolve_model_name(provider, provider_name, model_name)
+
+    init_kwargs: dict[str, Any] = {
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        "max_retries": max_retries,
+        **model_kwargs,
+    }
+    backend = _PROVIDER_IDS[provider]
+    if provider == "gemini":
+        project = os.environ.get("ANTHROPIC_VERTEX_PROJECT_ID") or os.environ.get(
+            "GOOGLE_CLOUD_PROJECT"
+        )
+        if project:
+            location = (
+                "global"
+                if model.startswith("gemini-3")
+                else os.environ.get("CLOUD_ML_REGION", "us-east5")
+            )
+            init_kwargs.setdefault("vertexai", True)
+            init_kwargs.setdefault("project", project)
+            init_kwargs.setdefault("location", location)
+            backend = f"google_genai/vertex-ai ({project}/{location})"
+    elif provider == "ollama":
+        init_kwargs.setdefault(
+            "base_url", os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
+        )
+
+    chat_model = init_chat_model(
+        model=model,
+        model_provider=_PROVIDER_IDS[provider],
+        **init_kwargs,
+    )
+    print(f"  LangChain provider: {provider}/{model} ({backend})", file=sys.stderr)
+    return chat_model
+
+
 def list_providers() -> list[str]:
-    """Return the list of supported provider names."""
-    return list(_PROVIDER_MAP.keys())
+    """Return supported DevKG provider names."""
+    return list(_PROVIDER_IDS)

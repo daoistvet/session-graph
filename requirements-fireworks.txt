@@ -1,0 +1,5 @@
+# Fireworks AI provider
+# Install with: pip install -r requirements-fireworks.txt
+
+-r requirements.txt
+langchain-fireworks>=1.0,<2.0
