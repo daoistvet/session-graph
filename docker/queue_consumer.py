@@ -184,6 +184,36 @@ def translate_path(host_path: str) -> str:
     return host_path  # can't translate, return as-is
 
 
+def _derive_link_metadata(container_path: str, session_id: str) -> dict:
+    """Derive provenance metadata for Wikidata linking runs from a transcript path."""
+    if "/cursor-sessions/" in container_path or ".cursor/projects" in container_path:
+        platform = "cursor"
+    elif "/pi-sessions/" in container_path or ".pi/agent/sessions" in container_path:
+        platform = "pi"
+    elif "/codex-sessions/" in container_path or ".codex/sessions" in container_path:
+        platform = "codex"
+    else:
+        platform = "claude"
+
+    project = ""
+    p = Path(container_path)
+    if ".cursor" in p.parts:
+        idx = p.parts.index("projects")
+        if idx + 1 < len(p.parts):
+            project = p.parts[idx + 1]
+    elif "projects" in p.parts:
+        idx = p.parts.index("projects")
+        if idx + 1 < len(p.parts):
+            project = p.parts[idx + 1]
+
+    return {
+        "source_platform": platform,
+        "session_id": session_id or p.stem,
+        "source_file": str(p.resolve()),
+        "project": project,
+    }
+
+
 def process_message(body: bytes) -> None:
     """Process a single pipeline job."""
     msg = json.loads(body)
@@ -225,9 +255,9 @@ def process_message(body: bytes) -> None:
     log("INFO", f"Processing: {basename}")
 
     # Import pipeline modules (deferred to avoid import errors during setup)
-    from pipeline.llm_providers import get_provider
+    from pipeline.llm_providers import get_extraction_model
 
-    model = get_provider()
+    model = get_extraction_model()
 
     devkg_triple_count = 0
 
@@ -250,7 +280,10 @@ def process_message(body: bytes) -> None:
         if os.environ.get("DEVKG_SKIP_LINKING", "").lower() not in ("1", "true", "yes"):
             try:
                 from pipeline.link_entities import link_entities_into_graph
-                link_stats = link_entities_into_graph(graph)
+                link_trace_metadata = _derive_link_metadata(container_path, session_id)
+                link_stats = link_entities_into_graph(
+                    graph, trace_metadata=link_trace_metadata
+                )
                 log(
                     "INFO",
                     "  wikidata: "

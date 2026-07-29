@@ -319,7 +319,7 @@ def main():
                         help="Conversation index to process (omit to list all)")
     parser.add_argument("--skip-extraction", action="store_true",
                         help="Skip LLM triple extraction")
-    parser.add_argument("--provider", help="LLM provider: gemini, openai, anthropic, ollama (auto-detect if omitted)")
+    parser.add_argument("--provider", help="LLM provider: gemini, openai, anthropic, fireworks, ollama (auto-detect if omitted)")
     parser.add_argument("--model", help="Model name override")
     parser.add_argument("--developer", default="developer", help="Developer name for provenance (default: developer)")
     args = parser.parse_args()
@@ -363,8 +363,8 @@ def main():
     # Initialize LLM provider
     llm_model = None
     if not args.skip_extraction:
-        from pipeline.llm_providers import get_provider
-        llm_model = get_provider(provider_name=args.provider, model_name=args.model)
+        from pipeline.llm_providers import get_extraction_model
+        llm_model = get_extraction_model(provider_name=args.provider, model_name=args.model)
 
     # Build graph
     g = build_graph(
