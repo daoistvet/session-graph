@@ -6,8 +6,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends gcc && rm -rf /var/lib/apt/lists/*
 
 # Install Python deps
-COPY requirements.txt requirements-gemini.txt ./
-RUN pip install --no-cache-dir -r requirements-gemini.txt pika>=1.3.0
+COPY requirements.txt requirements-gemini.txt requirements-fireworks.txt ./
+RUN pip install --no-cache-dir -r requirements-gemini.txt -r requirements-fireworks.txt pika>=1.3.0
 
 # Copy application code
 COPY pipeline/ pipeline/
