@@ -5,10 +5,10 @@ This module builds an ontologist prompt and parses the LLM response into
 normalized (subject, predicate, object) triples aligned with the devkg ontology.
 
 Usage:
-    from pipeline.llm_providers import get_provider
+    from pipeline.llm_providers import get_extraction_model
     from pipeline.triple_extraction import extract_triples_gemini
 
-    model = get_provider()
+    model = get_extraction_model()
     triples = extract_triples_gemini(model, "Neo4j stores data as a property graph")
     # [{"subject": "neo4j", "predicate": "isTypeOf", "object": "property graph"}]
 """

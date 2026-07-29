@@ -186,6 +186,57 @@ def get_provider(
     return chat_model
 
 
+# ---------------------------------------------------------------------------
+# Process-level singletons per workload
+# ---------------------------------------------------------------------------
+#
+# Extraction and linking each keep their own cached chat model. A long-lived
+# process (queue consumer, bulk processor) pays model construction once;
+# env changes require a process restart. Tests reset via the clear_* helpers.
+
+_extraction_model: BaseChatModel | None = None
+_extraction_model_key: tuple | None = None
+
+
+def get_extraction_model(
+    provider_name: str | None = None,
+    model_name: str | None = None,
+    *,
+    temperature: float = 0.2,
+    max_tokens: int = 8192,
+    max_retries: int = 6,
+    **model_kwargs: Any,
+) -> BaseChatModel:
+    """Return the process-level singleton chat model for triple extraction.
+
+    First call constructs the model via ``get_provider``; subsequent calls
+    return the cached instance, ignoring arguments. Use ``reset_extraction_model``
+    to clear the cache (mainly for tests).
+    """
+    global _extraction_model, _extraction_model_key
+    key = (provider_name, model_name, temperature, max_tokens, max_retries)
+    if _extraction_model is not None and _extraction_model_key == key:
+        return _extraction_model
+    _extraction_model = get_provider(
+        provider_name=provider_name,
+        model_name=model_name,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        max_retries=max_retries,
+        **model_kwargs,
+    )
+    _extraction_model_key = key
+    return _extraction_model
+
+
+def reset_extraction_model() -> None:
+    """Clear the extraction model singleton (test hook)."""
+    global _extraction_model, _extraction_model_key
+    _extraction_model = None
+    _extraction_model_key = None
+
+
+
 def list_providers() -> list[str]:
     """Return supported DevKG provider names."""
     return list(_PROVIDER_IDS)

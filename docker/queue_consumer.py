@@ -255,9 +255,9 @@ def process_message(body: bytes) -> None:
     log("INFO", f"Processing: {basename}")
 
     # Import pipeline modules (deferred to avoid import errors during setup)
-    from pipeline.llm_providers import get_provider
+    from pipeline.llm_providers import get_extraction_model
 
-    model = get_provider()
+    model = get_extraction_model()
 
     devkg_triple_count = 0
 

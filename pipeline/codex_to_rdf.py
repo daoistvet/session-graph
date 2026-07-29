@@ -201,9 +201,9 @@ def main():
 
     model = None
     if not args.skip_extraction:
-        from pipeline.llm_providers import get_provider
+        from pipeline.llm_providers import get_extraction_model
 
-        model = get_provider(provider_name=args.provider, model_name=args.model)
+        model = get_extraction_model(provider_name=args.provider, model_name=args.model)
 
     graph = build_graph(args.input, skip_extraction=args.skip_extraction, model=model)
     out_path = Path(args.output)

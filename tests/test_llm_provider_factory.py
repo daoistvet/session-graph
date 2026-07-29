@@ -225,3 +225,29 @@ def test_linker_model_honors_llm_model(monkeypatch):
     assert captured["provider"] == "fireworks"
     assert captured["model"] == "accounts/fireworks/models/glm-5p2"
     linker._shared_model = None
+
+
+def test_extraction_model_singleton_caches(monkeypatch):
+    import pipeline.llm_providers as lp
+
+    calls = []
+
+    def fake_get_provider(**kwargs):
+        calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(lp, "get_provider", fake_get_provider)
+    lp.reset_extraction_model()
+
+    first = lp.get_extraction_model(provider_name="gemini", model_name="gemini-2.5-flash")
+    second = lp.get_extraction_model(provider_name="gemini", model_name="gemini-2.5-flash")
+    assert first is second
+    assert len(calls) == 1
+
+    # Different args reconstruct the model
+    third = lp.get_extraction_model(provider_name="openai", model_name="gpt-4o-mini")
+    assert third is not first
+    assert len(calls) == 2
+
+    lp.reset_extraction_model()
+    assert lp._extraction_model is None
