@@ -13,6 +13,7 @@ All notable changes to session-graph are documented here.
 - `bulk_process.py` scans Cursor agent transcripts and writes TTLs to `output/cursor/`.
 - Parsers no longer emit ToolCall/ToolResult RDF (sidetrack for discovery; prefer KnowledgeTriples + `sioc:content`).
 - **`devkg-sparql` skill** — provenance-first retrieval: Template 5 (topic+intent+session), Session Insight Pack, multi-platform path resolution; 16 local + 6 Wikidata templates.
+- Established the release workflow in `CLAUDE.md` and `AGENTS.md`: feature branches promote through validated `development`; `main` must match the production deployment.
 
 ### Verified
 - End-to-end Cursor flow completed successfully: Cursor hook → RabbitMQ → parser/LLM extraction → Wikidata linking → Fuseki.

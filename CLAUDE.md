@@ -17,6 +17,22 @@ Build a unified developer knowledge graph that connects scattered knowledge from
 
 The pipeline extracts structured `(subject, predicate, object)` triples from AI assistant messages, links entities to Wikidata via `owl:sameAs`, and loads everything into a SPARQL-queryable triplestore with full provenance.
 
+## Branch and Production Workflow
+
+Use this promotion path for all changes:
+
+```text
+feature/* → development → validation → main → production rebuild
+```
+
+- Create feature branches from `development` when it exists; merge completed features back into `development`.
+- Run compilation, parser/integration checks, and relevant live-service verification on `development` before promotion.
+- `main` must represent the exact version deployed in production. Do not merge unvalidated work directly into `main`.
+- After promoting `development` to `main`, push both branches and rebuild/restart production from a clean `main` checkout.
+- Preserve Docker volumes during deployment; Fuseki and RabbitMQ data must not be recreated or removed.
+- Record or verify the deployed Git SHA. If an image lacks revision metadata, compare critical source hashes and treat adding an OCI revision label as pending infrastructure work.
+- Start new feature work only after `development` and `main` accurately reflect their environments.
+
 ## Architecture: Ontology + Knowledge Graph + Hybrid Retrieval
 
 ### Ontology Stack (Composed W3C Standards)
