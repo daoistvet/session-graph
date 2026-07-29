@@ -25,6 +25,7 @@ _PROVIDER_IDS = {
     "openai": "openai",
     "anthropic": "anthropic",
     "fireworks": "fireworks",
+    "mistral": "mistralai",
     "ollama": "ollama",
 }
 
@@ -35,6 +36,7 @@ _PROVIDER_ALIASES = {
     "gemini-vertex": "gemini",
     "vertex": "gemini",
     "claude": "anthropic",
+    "mistralai": "mistral",
 }
 
 _DEFAULT_MODELS: dict[str, str | None] = {
@@ -44,6 +46,7 @@ _DEFAULT_MODELS: dict[str, str | None] = {
     # Fireworks model availability changes independently of LangChain. Require
     # an explicit model rather than silently selecting a stale serverless ID.
     "fireworks": None,
+    "mistral": "mistral-small-latest",
     "ollama": "llama3.1",
 }
 
@@ -77,6 +80,8 @@ def resolve_provider_name(provider_name: str | None = None) -> str:
         return "anthropic"
     if os.environ.get("FIREWORKS_API_KEY"):
         return "fireworks"
+    if os.environ.get("MISTRAL_API_KEY"):
+        return "mistral"
 
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
     try:
